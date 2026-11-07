@@ -88,23 +88,29 @@ struct MenuBarDashboard: View {
     }
 }
 
-private struct PopoverMascot: NSViewRepresentable {
+private struct PopoverMascot: View {
     let busy: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @PanelState private var index = 0
 
-    private static let idleImage = Bundle.main.url(forResource: "DiskBuddy", withExtension: "gif").flatMap(NSImage.init(contentsOf:))
-    private static let busyImage = Bundle.main.url(forResource: "DiskBuddyScan", withExtension: "gif").flatMap(NSImage.init(contentsOf:))
+    private static let size = NSSize(width: 26, height: 26)
+    private static let idle = MascotFrame.load("DiskBuddy", size: size, template: false)
+    private static let working = MascotFrame.load("DiskBuddyScan", size: size, template: false)
 
-    func makeNSView(context: Context) -> NSImageView {
-        let view = NSImageView()
-        view.imageScaling = .scaleProportionallyUpOrDown
-        return view
-    }
-
-    func updateNSView(_ view: NSImageView, context: Context) {
-        let image = (busy ? Self.busyImage : Self.idleImage) ?? NSApp.applicationIconImage
-        if view.image !== image { view.image = image }
-        view.animates = !reduceMotion
+    var body: some View {
+        let frames = busy ? Self.working : Self.idle
+        let frame = frames.indices.contains(index) ? frames[index] : frames.first
+        Image(nsImage: frame?.image ?? NSApp.applicationIconImage)
+            .resizable().scaledToFit().frame(width: 26, height: 26).clipped()
+            .task(id: [busy, reduceMotion]) {
+                index = 0
+                guard !reduceMotion, frames.count > 1 else { return }
+                while !Task.isCancelled {
+                    do { try await Task.sleep(for: .seconds(frames[index].delay)) }
+                    catch { return }
+                    index = (index + 1) % frames.count
+                }
+            }
     }
 }
 

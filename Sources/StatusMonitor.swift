@@ -3,11 +3,11 @@ import Combine
 import ImageIO
 import SwiftUI
 
-private struct MascotFrame {
+struct MascotFrame {
     let image: NSImage
     let delay: TimeInterval
 
-    static func load(_ name: String) -> [MascotFrame] {
+    static func load(_ name: String, size: NSSize = NSSize(width: 19, height: 18), template: Bool = true) -> [MascotFrame] {
         guard let url = Bundle.main.url(forResource: name, withExtension: "gif"),
               let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return [] }
         return (0..<CGImageSourceGetCount(source)).compactMap { index in
@@ -16,8 +16,8 @@ private struct MascotFrame {
             let gif = properties?[kCGImagePropertyGIFDictionary] as? [CFString: Any]
             let delay = gif?[kCGImagePropertyGIFUnclampedDelayTime] as? Double
                 ?? gif?[kCGImagePropertyGIFDelayTime] as? Double ?? 1.0
-            let image = NSImage(cgImage: bitmap, size: NSSize(width: 19, height: 18))
-            image.isTemplate = true
+            let image = NSImage(cgImage: bitmap, size: size)
+            image.isTemplate = template
             return MascotFrame(image: image, delay: min(30, max(0.12, delay)))
         }
     }

@@ -18,7 +18,7 @@ open "build/Dude, Where’s My Disk.app"
 ## Find the worktrees worth checking first
 
 1. Choose **Add Workspace…** and select a project folder. If it contains multiple repositories, choose which ones to include. The app discovers the root repository and repositories in its immediate subfolders.
-2. Select the workspace for a combined view, or a child repository for a narrower scan. **Scan Storage** measures that folder and its registered linked worktrees, including checkouts elsewhere on disk.
+2. Select the workspace for a combined view, or a child repository for a narrower scan. **Workspace options (…) → Scan Storage** measures that folder and its registered linked worktrees, including checkouts elsewhere on disk.
 3. Open **By reason** to see the first cleanup blocker for each worktree. Expand a group to see its largest checkouts first. **Largest first** ranks worktrees across reasons. **All** includes checkouts currently in use and those eligible for removal.
 4. Choose **Analyze…** on a worktree to see the local verdict, or **Clean…** on an eligible worktree to review the path and generated items. Confirming **Remove Worktree** permanently removes the checkout and keeps its local branch. Added workspaces and their selected repositories are remembered on this Mac.
 
@@ -32,7 +32,7 @@ open "build/Dude, Where’s My Disk.app"
 
 The menu bar uses a monochrome template version of the mascot. It blinks while idle, moves while scanning, and uses a still frame when macOS Reduce Motion is enabled.
 
-The menu bar shows disk usage for **linked worktrees only**. The main workspace's **On disk** total also includes the main checkout. A single pass across the registered workspaces counts overlapping folders and hard links once. The popover shows per-workspace usage, the last scan time and a partial-scan indicator if a folder could not be measured.
+The menu bar shows disk usage for **linked worktrees only**. The **On disk** total in Workspace options also includes the main checkout. A single pass across the registered workspaces counts overlapping folders and hard links once. The popover shows per-workspace usage, the last scan time and a partial-scan indicator if a folder could not be measured.
 
 Close the main window to keep monitoring in the menu bar. Use **Settings…** to select a refresh interval (15 minutes by default, or manual only). **Open App** brings back the full window and **Quit** stops the monitor.
 

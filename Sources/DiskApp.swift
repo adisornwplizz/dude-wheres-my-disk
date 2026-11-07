@@ -16,6 +16,7 @@ private struct DiskWindow: View {
     @ObservedObject var status: StatusMonitor
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openSettings) private var openSettings
+    @ViewState private var batchRequest: Task<Void, Never>?
     @ViewState private var analysisTarget: AnalysisTarget?
     @ViewState private var member: SidebarItem?
     @ViewState private var collapsedWorkspaces: Set<String> = []
@@ -45,9 +46,17 @@ private struct DiskWindow: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 0) {
-                StudioMasthead()
-            }.background(Studio.canvas)
+            StudioMasthead {
+                Button("Analyze") {
+                    analysisTarget = nil
+                    library.pendingRemoval = nil
+                    status.showAllAnalysis = true
+                    status.analysisRequested = true
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(library.workspaces.isEmpty || library.activity != nil || batchRequest != nil)
+                .help("Analyze all workspaces on this Mac")
+            }
             Divider()
             HSplitView {
                 VStack(alignment: .leading, spacing: 0) {
@@ -88,7 +97,7 @@ private struct DiskWindow: View {
                 VStack(spacing: 0) {
                     if status.showAllAnalysis && !library.workspaces.isEmpty {
                         AllWorkspacesAnalysisView(library: library, options: aiOptions,
-                                                  analysisRequested: $status.analysisRequested)
+                                                  analysisRequested: $status.analysisRequested, request: $batchRequest)
                     } else if let target = analysisTarget {
                         AIAnalysisView(target: target, options: aiOptions, close: { analysisTarget = nil }).id(target.id)
                     } else if let workspace = library.selected {
@@ -206,6 +215,11 @@ private struct DiskWindow: View {
             }
             Spacer()
             Menu {
+                if let report {
+                    Text("On disk: " + (report.partial ? "≥ " : "") + diskSize(report.total))
+                }
+                Button("Scan Storage") { library.scanStorage(for: workspace, child: child) }
+                    .disabled(library.activity != nil)
                 Button("Refresh repository list") { library.refresh(shownProjects) }
                     .disabled(library.activity != nil).keyboardShortcut("r")
                 if let child { forgetButton(child, in: workspace) }
@@ -230,35 +244,9 @@ private struct DiskWindow: View {
             Text(child?.id ?? workspace.id).font(.system(.caption, design: .monospaced))
                 .lineLimit(1).truncationMode(.middle).foregroundStyle(.secondary).textSelection(.enabled)
         }.padding(.horizontal, 22).padding(.vertical, 15)
-        GeometryReader { geometry in
-            let wide = geometry.size.width >= 890
-            if wide {
-                HStack(alignment: .top, spacing: 0) {
-                    VStack(alignment: .leading, spacing: 0) {
-                        Divider()
-                        reviewContent(workspace: workspace, child: child, standalone: standalone,
-                                      shownProjects: shownProjects, report: report)
-                    }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                    Divider()
-                    VStack(spacing: 0) {
-                        Divider()
-                        StorageSummary(report: report, busy: library.activity != nil, vertical: true) {
-                            library.scanStorage(for: workspace, child: child)
-                        }
-                        Spacer()
-                    }.frame(width: 226).background(Studio.rail)
-                }
-            } else {
-                VStack(spacing: 0) {
-                    StorageSummary(report: report, busy: library.activity != nil) {
-                        library.scanStorage(for: workspace, child: child)
-                    }
-                    Divider()
-                    reviewContent(workspace: workspace, child: child, standalone: standalone,
-                                  shownProjects: shownProjects, report: report)
-                }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            }
-        }
+        Divider()
+        reviewContent(workspace: workspace, child: child, standalone: standalone,
+                      shownProjects: shownProjects, report: report)
     }
 
     @ViewBuilder private func reviewContent(workspace: Workspace, child: Project?, standalone: Bool,
@@ -500,75 +488,6 @@ private struct CleanupBrowser<Row: View, Repositories: View>: View {
                 }
             }
         }
-    }
-}
-
-private struct StorageSummary: View {
-    let report: StorageReport?
-    let busy: Bool
-    var vertical = false
-    let scan: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 13) {
-            HStack(spacing: 8) {
-                StudioCaption(vertical ? "Storage inspector" : "Storage")
-                Spacer()
-                if let report {
-                    Text(report.measuredAt.formatted(date: .omitted, time: .shortened))
-                        .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                        .help(report.measuredAt.formatted())
-                }
-                if !vertical { scanButton }
-            }
-            if let report {
-                let layout = vertical ? AnyLayout(VStackLayout(alignment: .leading, spacing: 15))
-                                      : AnyLayout(HStackLayout(alignment: .top, spacing: 14))
-                layout {
-                    metric("On disk", diskSize(report.total))
-                    metric("Cleanable estimate", report.activityAvailable ? diskSize(report.cleanableBytes) : "Unknown",
-                           detail: report.activityAvailable ? "\(report.cleanableCount) worktree\(report.cleanableCount == 1 ? "" : "s")" : nil)
-                    metric("Worktrees in use", report.activityAvailable ? String(report.inUseCount) : "Unknown")
-                }
-                if report.partial {
-                    Label("Partial scan", systemImage: "exclamationmark.circle")
-                        .font(.caption).help("Some folders or worktrees could not be fully checked.")
-                }
-                Group {
-                    if !report.users.isEmpty {
-                        Label("In use by " + report.users.joined(separator: ", "), systemImage: "waveform.path.ecg")
-                    } else if report.activityAvailable {
-                        Text("No matching process working directories detected.")
-                    } else { Text("Process activity unavailable.") }
-                }
-                .font(.caption).foregroundStyle(.secondary).lineLimit(vertical ? 6 : 2)
-                .help(report.users.isEmpty ? "Checks visible process working directories at scan time." : report.users.joined(separator: ", "))
-            } else {
-                Text("Measure this folder and its linked worktrees, including external folders. Check Git status and process activity for cleanup.")
-                    .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }
-            if vertical { scanButton }
-        }
-        .padding(.horizontal, vertical ? 16 : 22).padding(.vertical, 13)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(LinearGradient(colors: [Studio.accent.opacity(0.07), Studio.accent.opacity(0.025)],
-                                   startPoint: .topLeading, endPoint: .bottomTrailing))
-    }
-
-    private var scanButton: some View {
-        Button(action: scan) {
-            Label(report == nil ? "Scan Storage" : "Rescan Storage", systemImage: "internaldrive")
-        }
-        .buttonStyle(.borderedProminent).controlSize(.small).disabled(busy)
-    }
-
-    private func metric(_ label: String, _ value: String, detail: String? = nil) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            StudioCaption(label)
-            Text(value).font(.system(size: vertical ? 27 : 23, weight: .semibold, design: .rounded).monospacedDigit()).tracking(-0.7)
-            if let detail { Text(detail).font(.caption).foregroundStyle(.secondary) }
-        }.frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityElement(children: .combine)
     }
 }
 

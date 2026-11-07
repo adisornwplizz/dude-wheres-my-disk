@@ -118,6 +118,7 @@ struct AllWorkspacesAnalysisView: View {
     @ObservedObject var library: Library
     @ObservedObject var options: AIOptions
     @Binding var analysisRequested: Bool
+    @Binding var request: Task<Void, Never>?
     @BatchState private var assessment: BatchAssessment?
     @BatchState private var awaitingScan = false
     @BatchState private var queuedAnalysis = false
@@ -125,7 +126,6 @@ struct AllWorkspacesAnalysisView: View {
     @BatchState private var showEvidence = false
     @BatchState private var reply: String?
     @BatchState private var problem: String?
-    @BatchState private var request: Task<Void, Never>?
     @BatchState private var requestID: UUID?
     @BatchState private var pendingRemoval: Removal?
     @BatchState private var cleaning: Removal?
@@ -135,15 +135,9 @@ struct AllWorkspacesAnalysisView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("All workspaces").font(.title2.bold())
-                    Label("Only on this Mac", systemImage: "lock.shield").font(.callout).foregroundStyle(.secondary)
-                }
-                Spacer()
-                Button("Analyze") { startAnalysis() }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(library.activity != nil || request != nil || library.workspaces.isEmpty)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("All workspaces").font(.title2.bold())
+                Label("Only on this Mac", systemImage: "lock.shield").font(.callout).foregroundStyle(.secondary)
             }
             if let snapshot = library.overview, let assessment {
                 Text("\(snapshot.workspaces.count) workspaces · \(assessment.items.count) linked worktrees · \(snapshot.measuredAt.formatted(date: .omitted, time: .shortened))")

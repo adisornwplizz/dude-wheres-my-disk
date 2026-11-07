@@ -24,7 +24,9 @@ struct StudioCaption: View {
     }
 }
 
-struct StudioMasthead: View {
+struct StudioMasthead<Action: View>: View {
+    @ViewBuilder let action: () -> Action
+
     var body: some View {
         HStack(spacing: 12) {
             Image(nsImage: NSApp.applicationIconImage)
@@ -34,6 +36,7 @@ struct StudioMasthead: View {
                 .font(.system(size: 20, weight: .bold))
                 .tracking(-0.9)
             Spacer()
+            action()
         }
         .padding(.horizontal, 24).padding(.vertical, 12)
         .background(Studio.canvas)

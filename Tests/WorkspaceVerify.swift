@@ -129,14 +129,21 @@ private struct WorkspaceVerify {
         try check(fleet.cleanup.rows.count == 3 && fleet.linkedBytes == linkedSize, "Fleet included main checkouts or duplicated sizes")
         try check(fleet.workspaces.reduce(0) { $0 + $1.linkedBytes } > fleet.linkedBytes, "Fixture did not exercise overlapping memberships")
         try check(fleet.cleanableCount == 3 && fleet.cleanableBytes == linkedSize && !fleet.partial, "Fleet cleanup status incorrect")
+        let analyzed = fleet.cleanup.rows[0]
+        restored.rememberDescription("Adds fixture export", source: "Local model", for: analyzed, at: fleet.measuredAt)
         restored.refreshMinutes = 0
         let manual = Library(defaults: defaults)
         manual.startMonitoring()
         try await finish(manual)
         try check(manual.overview == nil && manual.selected?.projects.first?.trees.count == 1, "Off should restore registrations without a disk scan")
+        let persisted = manual.taskDescription(repo: analyzed.projectID, tree: analyzed.tree)
+        try check(persisted.text == "Adds fixture export" && persisted.source.hasPrefix("Local model"), "Task description lost after restart")
+        let updated = Checkout(path: analyzed.tree.path, branch: analyzed.tree.branch, head: "different", locked: false, missing: false)
+        try check(manual.taskDescription(repo: analyzed.projectID, tree: updated).text != persisted.text, "Old description shown for a new commit")
         manual.refreshMinutes = 5
         try await finish(manual)
         try check(manual.overview?.linkedCount == 3, "Enabling background monitoring did not refresh")
+        try check(manual.taskDescription(repo: analyzed.projectID, tree: analyzed.tree).text == persisted.text, "Automatic scan erased task description")
         manual.refreshMinutes = 0
         print("Verified fleet deduplication, restore, opt-out and background scanning.")
         print("Verified workspace discovery, selected members, standalone navigation, deduplication, routing and partial refresh.")

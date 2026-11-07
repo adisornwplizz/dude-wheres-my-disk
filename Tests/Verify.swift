@@ -42,6 +42,10 @@ private struct Verify {
             return item
         }
 
+        let previews = Inventory.recentBranchWork(repo: repo, trees: checkouts)
+        let changedHead = try checkout("partial").head, cleanHead = try checkout("clean branch").head
+        try require(previews[changedHead]?.contains("still unique") == true &&
+                    previews[cleanHead]?.hasPrefix("No branch-only") == true, "Launch preview missing or attributed shared work to a branch")
         let dirtyEvidence = try Inventory.changeEvidence(repo: repo, checkout: checkout("dirty"))
         try require(dirtyEvidence.hasBase && dirtyEvidence.stagedPatch.contains("+staged change") &&
                     dirtyEvidence.unstagedPatch.contains("+edited tracked file") &&

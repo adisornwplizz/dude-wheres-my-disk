@@ -20,7 +20,7 @@ open "build/Dude, Where’s My Disk.app"
 1. Choose **Add Workspace…** and select a project folder. If it contains multiple repositories, choose which ones to include. The app discovers the root repository and repositories in its immediate subfolders.
 2. Select the workspace for a combined view, or a child repository for a narrower scan. **Workspace options (…) → Scan Storage** measures that folder and its registered linked worktrees, including checkouts elsewhere on disk.
 3. Open **By reason** to see the first cleanup blocker for each worktree. Expand a group to see its largest checkouts first. **Largest first** ranks worktrees across reasons. **All** includes checkouts currently in use and those eligible for removal.
-4. Each worktree row shows its local cleanup reason and size. After **Analyze all**, its **What changed** card describes the work in that checkout. Choose **Clean…** on an eligible row to review the path and generated items. Confirming **Remove Worktree** permanently removes the checkout and keeps its local branch. Added workspaces and their selected repositories are remembered on this Mac.
+4. Each worktree row shows its local cleanup reason and size. Its **Task description** card shows up to two recent commit subjects unique to the branch, even before you analyze. **Analyze all** adds a timestamped description from Git or your local model. Choose **Clean…** on an eligible row to review the path and generated items. Confirming **Remove Worktree** permanently removes the checkout and keeps its local branch. Added workspaces and their selected repositories are remembered on this Mac.
 
 **On disk** counts allocated space once across overlapping folders and hard links in the selected scope. **Cleanable estimate** counts eligible checkouts and discounts files with surviving hard links outside them. Individual rows show the whole checkout, so the size of a parent can include a child listed elsewhere. APFS snapshots and clones can also reduce the space actually returned to the volume.
 
@@ -38,7 +38,7 @@ Close the main window to keep monitoring in the menu bar. Use **Settings…** to
 
 The main window opens on **All workspaces**. Each row shows a checkout, its size, its first cleanup reason and a next step. The header’s **Analyze all** checks every added workspace. Your sidebar selection filters the visible results and stays selected while the analysis runs. If a local Ollama model is configured, the app also asks it to explain the results. Progress and recommendations appear in the same window. **Clean…** shows the path and generated items inline before you confirm removal. The local branch stays available.
 
-For **What changed**, Analyze reads recent branch commit subjects, changed paths and bounded diff excerpts relative to the shared ancestor with the local default branch. It also samples staged and unstaged changes and lists untracked names. With a local model, each checkout gets a separate loopback request for a short Thai explanation. Without one, the card shows Git subjects and filenames. A large diff is sampled, so the description may cover only part of the work. Cleanup eligibility always comes from Git and local checks.
+For **Task description**, Analyze reads recent branch commit subjects, changed paths and bounded diff excerpts relative to the shared ancestor with the local default branch. It also samples staged and unstaged changes and lists untracked names. With a local model, each checkout gets a separate loopback request for a short Thai explanation. Without one, the card shows Git subjects and filenames. The latest description is saved on this Mac, survives a restart and background scans, and is labeled with its analysis time. Analyze again to include newer working-copy edits. A large diff is sampled, so the description may cover only part of the work. Cleanup eligibility always comes from Git and local checks.
 
 The separate cleanup explanation uses aggregate counts and up to 48 anonymized worktree entries. Optional cloud worktree reports receive only sanitized cleanup facts. Scheduled background scans use local Git and disk checks. Git operates on the refs and objects already present on this Mac.
 
@@ -56,7 +56,7 @@ Before removal, the app rechecks the registration, Git state, generated-item lis
 
 ## Optional AI explanations
 
-**Ollama (Local)** is the first choice on a fresh installation. With Ollama running and a chat model installed, open **Settings → Configure…**, press **Connect**, choose an installed model, and press **Save**. The app uses the standard loopback address `http://127.0.0.1:11434`. Model discovery fetches metadata. Inference starts when you select **Analyze locally** on a worktree. The app requires a local model and uses Ollama's local-only model selector. [Ollama API](https://docs.ollama.com/api)
+**Ollama (Local)** is the first choice on a fresh installation. With Ollama running and a chat model installed, open **Settings → Configure…**, press **Connect**, choose an installed model, and press **Save**. The app uses the standard loopback address `http://127.0.0.1:11434`. Model discovery fetches metadata. Inference starts when you choose **Analyze all** or request a local worktree report. The app requires a local model and uses Ollama's local-only model selector. [Ollama API](https://docs.ollama.com/api)
 
 For a single worktree, enable **Allow cloud for individual worktrees** in Settings. This switch defaults to off, including for existing installations. Choose **Configure…**, then select **OpenAI**, **Claude Platform** or **DeepSeek**. Save a provider key in macOS Keychain and use **Connect** to retrieve that provider's model list. Connecting queries the catalog. Sending an analysis is a separate action.
 
@@ -64,7 +64,7 @@ In a workspace or repository, right-click a worktree and choose **View worktree 
 
 ## Token usage
 
-**Settings → Token usage** shows input and output totals for today and all time on this Mac. **Analysis history** shows each Analyze all run or individual model report, including completed requests from a cancelled run. Usage starts when this version is installed. It uses counts returned by the model provider. A total marked **≈** includes estimates based on UTF-8 text size (roughly four bytes per token). A request interrupted before it returns usage can be missing. Git-only checks consume zero model tokens. The history stores timestamps, counts and the type of run locally.
+The sidebar shows today’s total and all-time usage. Its bar splits today’s tokens into input and output. **Settings → Token usage** shows input and output totals for today and all time on this Mac. **Analysis history** shows each Analyze all run or individual model report, including completed requests from a cancelled run. Usage starts when this version is installed. It uses counts returned by the model provider. A total marked **≈** includes estimates based on UTF-8 text size (roughly four bytes per token). A request interrupted before it returns usage can be missing. Git-only checks consume zero model tokens. The history stores timestamps, counts and the type of run locally.
 
 ## Run the tests
 

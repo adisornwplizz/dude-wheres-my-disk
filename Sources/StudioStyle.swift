@@ -95,29 +95,68 @@ struct StudioWelcome: View {
     }
 }
 
+struct SidebarTokenCard: View {
+    @ObservedObject var usage: TokenUsage
+
+    var body: some View {
+        TimelineView(.everyMinute) { context in
+            let today = usage.daily(context.date)
+            let total = today.input + today.output
+            let lifetime = usage.total
+            VStack(alignment: .leading, spacing: 6) {
+                StudioCaption("Token usage")
+                Text((today.estimated ? "≈ " : "") + total.formatted() + " today")
+                    .font(.headline.monospacedDigit())
+                GeometryReader { proxy in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(total == 0 ? Studio.rule : Color.secondary.opacity(0.45))
+                        if total > 0 {
+                            Rectangle().fill(Studio.accent)
+                                .frame(width: proxy.size.width * CGFloat(today.input) / CGFloat(total))
+                        }
+                    }.clipShape(Capsule())
+                }.frame(height: 5).accessibilityHidden(true)
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 6) { legend(today.input, "in", Studio.accent); legend(today.output, "out", .secondary) }
+                    VStack(alignment: .leading, spacing: 2) { legend(today.input, "in", Studio.accent); legend(today.output, "out", .secondary) }
+                }
+                Text("All time · " + (lifetime.estimated ? "≈ " : "") + (lifetime.input + lifetime.output).formatted())
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            .padding(10).frame(maxWidth: .infinity, alignment: .leading)
+            .background(Studio.accent.opacity(0.055), in: RoundedRectangle(cornerRadius: 8))
+            .accessibilityElement(children: .combine)
+            .help("Today’s input and output as a share of today’s tokens. ≈ marks estimated usage.")
+        }
+    }
+
+    private func legend(_ count: Int, _ label: String, _ color: Color) -> some View {
+        HStack(spacing: 3) {
+            Circle().fill(color).frame(width: 5, height: 5).accessibilityHidden(true)
+            Text(count.formatted() + " " + label).font(.caption.monospacedDigit()).fixedSize()
+        }
+    }
+}
+
 struct WorktreeChangeCard: View {
-    let summary: String?
+    let description: TaskDescription
     let clean: (() -> Void)?
     let busy: Bool
 
     var body: some View {
-        if summary != nil || clean != nil {
-            HStack(alignment: .top, spacing: 12) {
-                VStack(alignment: .leading, spacing: 4) {
-                    if let summary {
-                        Text("What changed").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                        Text(verbatim: summary).font(.callout).textSelection(.enabled)
-                    } else {
-                        Text("Ready to clean").font(.callout)
-                    }
-                }
-                Spacer(minLength: 4)
-                if let clean {
-                    Button("Clean…", role: .destructive, action: clean).disabled(busy)
-                }
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Task description").font(.callout.weight(.semibold))
+                Text(verbatim: description.text).font(.callout).textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(verbatim: description.source).font(.caption).foregroundStyle(.secondary)
             }
-            .padding(11).frame(maxWidth: .infinity, alignment: .leading)
-            .background(Studio.accent.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+            Spacer(minLength: 4)
+            if let clean {
+                Button("Clean…", role: .destructive, action: clean).disabled(busy)
+            }
         }
+        .padding(11).frame(maxWidth: .infinity, alignment: .leading)
+        .background(Studio.accent.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
     }
 }

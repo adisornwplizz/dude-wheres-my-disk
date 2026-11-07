@@ -92,6 +92,8 @@ private struct DiskWindow: View {
                     }.frame(maxWidth: .infinity, maxHeight: .infinity)
                     .disabled(library.activity != nil)
                     Divider()
+                    SidebarTokenCard(usage: usage).padding(10)
+                    Divider()
                     Button(action: library.chooseRepository) {
                         Label("Add Workspace…", systemImage: "folder.badge.plus")
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -426,7 +428,7 @@ private struct DiskWindow: View {
                     library.pendingRemoval = Removal(repo: project.id, tree: tree, generatedFolders: inspection.generatedFolders)
                 }
             }
-            WorktreeChangeCard(summary: analysis.summaries[CleanupRow.ID(repo: project.id, path: tree.path)],
+            WorktreeChangeCard(description: library.taskDescription(repo: project.id, tree: tree),
                                clean: clean, busy: library.activity != nil)
             if let removal = library.pendingRemoval, removal.repo == project.id, removal.tree.id == tree.id {
                 RemovalConfirmation(removal: removal, busy: library.activity != nil,

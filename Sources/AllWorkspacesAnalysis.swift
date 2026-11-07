@@ -116,7 +116,6 @@ struct BatchSuggestions: Decodable {
 
 @MainActor
 final class WorkspaceAnalysisSession: ObservableObject {
-    @Published private(set) var summaries: [CleanupRow.ID: String] = [:]
     @Published private(set) var progress: String?
     @Published private(set) var reply: String?
     @Published private(set) var problem: String?
@@ -127,7 +126,6 @@ final class WorkspaceAnalysisSession: ObservableObject {
     func invalidate(unless timestamp: Date?) {
         guard snapshot != timestamp else { return }
         cancel()
-        summaries.removeAll()
         reply = nil
         problem = nil
         snapshot = timestamp
@@ -145,7 +143,6 @@ final class WorkspaceAnalysisSession: ObservableObject {
         runID = usageID
         problem = nil
         reply = nil
-        summaries.removeAll()
         progress = "Reading local changes…"
         task = Task {
             defer { if !Task.isCancelled { progress = nil; task = nil } }
@@ -163,13 +160,13 @@ final class WorkspaceAnalysisSession: ObservableObject {
                     let evidence = try await withTaskCancellationHandler(operation: { try await worker.value },
                                                                          onCancel: { worker.cancel() })
                     try Task.checkCancellation()
-                    summaries[row.id] = evidence.gitSummary
+                    library.rememberDescription(evidence.gitSummary, source: "Git analysis", for: row, at: timestamp)
                     if useModel && evidence.hasChanges {
                         do {
                             let payload = String(decoding: try JSONEncoder().encode(evidence), as: UTF8.self)
                             let summary = try await OllamaLocal.summarizeChanges(evidence: payload, model: model, session: session, usageID: usageID)
                             try Task.checkCancellation()
-                            summaries[row.id] = summary
+                            library.rememberDescription(summary, source: "Local model", for: row, at: timestamp)
                         } catch {
                             if Task.isCancelled { return }
                             problem = "Local model explanation unavailable. Showing Git change details. " + error.localizedDescription
@@ -178,7 +175,7 @@ final class WorkspaceAnalysisSession: ObservableObject {
                     }
                 } catch {
                     if Task.isCancelled { return }
-                    summaries[row.id] = "Change summary unavailable. " + error.localizedDescription
+                    problem = "Some changes could not be read. " + error.localizedDescription
                 }
             }
             guard useModel, !Task.isCancelled, library.overview?.measuredAt == timestamp else { return }
@@ -318,7 +315,7 @@ struct AllWorkspacesAnalysisView: View {
                 }.frame(maxWidth: .infinity, alignment: .leading).help(row.tree.path)
                 Text(row.bytes.map(diskSize) ?? "Size unknown").font(.callout.monospacedDigit())
             }
-            WorktreeChangeCard(summary: analysis.summaries[row.id],
+            WorktreeChangeCard(description: library.taskDescription(repo: row.projectID, tree: row.tree),
                                clean: row.category == .cleanable ? { prepareCleanup(row) } : nil,
                                busy: library.activity != nil || cleaning != nil)
             Text(verbatim: library.advice(for: row.id) ?? row.category.guidance).font(.callout).textSelection(.enabled)

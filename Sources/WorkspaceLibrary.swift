@@ -6,6 +6,7 @@ struct Project: Identifiable {
     let id: String
     var name: String { URL(fileURLWithPath: id).lastPathComponent }
     var trees: [Checkout] = []
+    var recentWork: [String: String] = [:]
     var error: String?
     var inspections: [Checkout.ID: Inspection] = [:]
     fileprivate var inspectedFiles: [Checkout.ID: FileIdentity] = [:]
@@ -115,11 +116,60 @@ fileprivate struct FileIdentity: Equatable {
     }
 }
 
+struct TaskDescription {
+    let text: String
+    let source: String
+}
+
+private struct SavedTaskDescription: Codable {
+    let repo, path, head: String
+    let branch: String?
+    let text: String
+    let source: String
+    let analyzedAt: Date
+}
+
 @MainActor
 final class Library: ObservableObject {
     private struct Membership: Codable {
         let folder: String
         var repos: [String]
+    }
+
+    private static let descriptionsKey = "analysis.taskDescriptions.v1"
+    @Published private var savedDescriptions: [CleanupRow.ID: SavedTaskDescription] = [:]
+
+    func taskDescription(repo: String, tree: Checkout) -> TaskDescription {
+        if let saved = savedDescriptions[.init(repo: repo, path: tree.path)],
+           saved.head == tree.head, saved.branch == tree.branch {
+            return TaskDescription(text: saved.text, source: saved.source + " · " + saved.analyzedAt.formatted(date: .abbreviated, time: .shortened))
+        }
+        if let text = projects[repo]?.recentWork[tree.head] {
+            return TaskDescription(text: text, source: "Git · recent branch commits")
+        }
+        return TaskDescription(text: "Branch history unavailable. Analyze all checks the local changes.", source: "Git")
+    }
+
+    func rememberDescription(_ text: String, source: String, for row: CleanupRow, at timestamp: Date) {
+        guard overview?.measuredAt == timestamp,
+              projects[row.projectID]?.trees.contains(row.tree) == true else { return }
+        savedDescriptions[row.id] = SavedTaskDescription(repo: row.projectID, path: row.tree.path,
+            head: row.tree.head, branch: row.tree.branch, text: text, source: source, analyzedAt: timestamp)
+        persistDescriptions()
+    }
+
+    private func persistDescriptions() {
+        if let data = try? JSONEncoder().encode(Array(savedDescriptions.values)) {
+            defaults.set(data, forKey: Self.descriptionsKey)
+        }
+    }
+
+    private func pruneDescriptions() {
+        let retained = savedDescriptions.filter { id, value in
+            guard let project = projects[id.repo] else { return false }
+            return project.error != nil || project.trees.contains { $0.path == id.path && $0.head == value.head && $0.branch == value.branch }
+        }
+        if retained.count != savedDescriptions.count { savedDescriptions = retained; persistDescriptions() }
     }
 
     @Published private var memberships: [Membership] = []
@@ -178,6 +228,12 @@ final class Library: ObservableObject {
             guard !repos.isEmpty else { continue }
             memberships.append(Membership(folder: entry.folder, repos: repos))
             for path in repos { projects[path] = Project(id: path, error: "Refresh to read this repository.") }
+        }
+        if let data = defaults.data(forKey: Self.descriptionsKey),
+           let stored = try? JSONDecoder().decode([SavedTaskDescription].self, from: data) {
+            for entry in stored where projects[entry.repo] != nil {
+                savedDescriptions[.init(repo: entry.repo, path: entry.path)] = entry
+            }
         }
         selection = memberships.first { $0.folder == defaults.string(forKey: "library.selection") }?.folder ?? memberships.first?.folder
     }
@@ -305,11 +361,15 @@ final class Library: ObservableObject {
     private func discardUnreferencedProjects() {
         let retained = Set(memberships.flatMap(\.repos))
         projects = projects.filter { retained.contains($0.key) }
+        pruneDescriptions()
     }
 
     private static func loadProject(_ path: String) async -> Project {
         await Task.detached {
-            do { return Project(id: path, trees: try Inventory.list(repo: path)) }
+            do {
+                let trees = try Inventory.list(repo: path)
+                return Project(id: path, trees: trees, recentWork: Inventory.recentBranchWork(repo: path, trees: trees))
+            }
             catch { return Project(id: path, error: error.localizedDescription) }
         }.value
     }
@@ -362,6 +422,7 @@ final class Library: ObservableObject {
                 try Inventory.remove(repo: repo, checkout: tree, approvedGeneratedFolders: removal.generatedFolders)
             }.value
             self.projects[repo]?.trees.removeAll { $0.id == tree.id }
+            self.pruneDescriptions()
             self.overview = nil
             self.requestAutomaticScan()
         }
@@ -425,6 +486,7 @@ final class Library: ObservableObject {
                     self.reports[StorageScope(workspace: root, member: nil)] = result.workspaceReports[scope.id]
                 }
             }
+            self.pruneDescriptions()
             if publishOverview {
                 self.overview = result.overview
                 onComplete?(result.overview)

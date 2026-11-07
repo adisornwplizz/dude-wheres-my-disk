@@ -372,6 +372,21 @@ enum Inventory {
         return names.count == 1 ? names[0] : nil
     }
 
+    // Read from the registered repository, without opening linked folders or their diffs.
+    static func recentBranchWork(repo: String, trees: [Checkout]) -> [String: String] {
+        guard !trees.isEmpty, let base = try? mainline(repo) else { return [:] }
+        var result: [String: String] = [:]
+        for head in Set(trees.map(\.head)) where !Task.isCancelled {
+            guard let subjects = try? git(repo, ["log", "--no-notes", "--no-show-signature",
+                "--no-merges", "--format=%s", "-2", base + ".." + head, "--"],
+                readTimeout: 5, captureLimit: 2048).line() else { continue }
+            let lines = subjects.split(separator: "\n").map { String($0.prefix(180)) }
+            result[head] = lines.isEmpty ? "No branch-only non-merge commits. Analyze all includes uncommitted changes."
+                : lines.joined(separator: "\n")
+        }
+        return result
+    }
+
     /// Only the on-device change-summary pipeline consumes these samples.
     static func changeEvidence(repo: String, checkout: Checkout) throws -> ChangeEvidence {
         try validate(repo, checkout)

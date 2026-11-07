@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import CryptoKit
 
 struct Checkout: Identifiable, Hashable, Sendable {
     var id: String { path }
@@ -74,6 +75,15 @@ enum MergeEvidence: Sendable {
     case ancestor(base: String)
     case matchingTree(base: String, checkpoint: String, outsideCommits: Int)
     case unproven(base: String, outsideCommits: Int)
+
+    var label: String {
+        switch self {
+        case .unchecked: return "Merge not checked"
+        case let .ancestor(base): return "Merged into local " + base
+        case let .matchingTree(base, _, _): return "Changes match a snapshot on local " + base
+        case let .unproven(base, count): return "Merge unverified · " + String(count) + (count == 1 ? " commit" : " commits") + " outside local " + base
+        }
+    }
 
     var code: String {
         switch self {
@@ -155,6 +165,11 @@ struct CleanupEvidence: Sendable {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         payload = String(decoding: try encoder.encode(facts), as: UTF8.self)
     }
+}
+
+enum ChangeCheck {
+    case reused
+    case changed(ChangeEvidence, fingerprint: String?)
 }
 
 struct ChangeEvidence: Encodable {
@@ -387,13 +402,53 @@ enum Inventory {
         return result
     }
 
-    /// Only the on-device change-summary pipeline consumes these samples.
-    static func changeEvidence(repo: String, checkout: Checkout) throws -> ChangeEvidence {
+    // Staged blob IDs distinguish index-only edits. Stat changed paths without opening untracked files.
+    private static func fingerprint(path: String, head: String, fork: String?) throws -> String? {
+        let limit = 4 * 1024 * 1024
+        let index = try git(path, ["diff", "--cached", "--raw", "--no-abbrev", "--no-renames",
+                                  "--no-ext-diff", "--ignore-submodules=all", "-z", head, "--"],
+                            readTimeout: 20, captureLimit: limit).checked()
+        let files = try git(path, ["ls-files", "--modified", "--others", "--exclude-standard", "-z", "--"],
+                            readTimeout: 20, captureLimit: limit).checked()
+        guard index.count < limit, files.count < limit else { return nil }
+        var digest = SHA256()
+        func append(_ data: Data) {
+            digest.update(data: Data(String(data.count).utf8))
+            digest.update(data: [0])
+            digest.update(data: data)
+        }
+        append(Data(head.utf8))
+        append(Data((fork ?? "").utf8))
+        append(index)
+        for file in files.split(separator: 0) {
+            try Task.checkCancellation()
+            guard let relative = String(data: file, encoding: .utf8) else { return nil }
+            append(Data(file))
+            var info = stat()
+            if lstat(path + "/" + relative, &info) == 0 {
+                append(Data("\(info.st_ino) \(info.st_mode) \(info.st_size) \(info.st_ctimespec.tv_sec) \(info.st_ctimespec.tv_nsec) \(info.st_mtimespec.tv_sec) \(info.st_mtimespec.tv_nsec)".utf8))
+            } else if errno == ENOENT || errno == ENOTDIR {
+                append(Data("deleted".utf8))
+            } else { return nil }
+        }
+        return Data(digest.finalize()).base64EncodedString()
+    }
+
+    static func checkChanges(repo: String, checkout: Checkout, matching previous: String?) throws -> ChangeCheck {
         try validate(repo, checkout)
         try verifyDirectory(repo, checkout)
         let path = checkout.path
         let head = try git(path, ["rev-parse", "--verify", "HEAD"]).line()
         guard head == checkout.head else { throw InventoryError("Checkout changed. Analyze again.") }
+
+        var fork: String?
+        if let base = try mainline(repo) {
+            let result = try git(path, ["merge-base", base, head])
+            if result.status == 0 { fork = try result.line() }
+            else if result.status != 1 { _ = try result.checked() }
+        }
+        let fingerprint = try fingerprint(path: path, head: head, fork: fork)
+        if let fingerprint, fingerprint == previous { return .reused }
 
         func sample(_ arguments: [String], bytes: Int) throws -> String {
             let data = try git(path, arguments, readTimeout: 20, captureLimit: bytes + 1).checked()
@@ -405,18 +460,12 @@ enum Inventory {
         let diff = ["diff", "--no-ext-diff", "--no-textconv", "--no-color", "--ignore-submodules=all", "--no-renames"]
         let patch = diff + ["--unified=1"]
         var evidence = ChangeEvidence()
-        if let base = try mainline(repo) {
-            let result = try git(path, ["merge-base", base, head])
-            if result.status == 0 {
-                let fork = try result.line()
-                evidence.hasBase = true
-                if fork != head {
-                    evidence.commits = try sample(["log", "--no-merges", "--no-notes", "--no-show-signature", "--format=%s",
-                                                   "-12", fork + ".." + head, "--"], bytes: 1800)
-                    evidence.branchFiles = try sample(diff + ["--name-status", fork, head, "--"], bytes: 1300)
-                    evidence.branchPatch = try sample(patch + [fork, head, "--"], bytes: 4800)
-                }
-            } else if result.status != 1 { _ = try result.checked() }
+        evidence.hasBase = fork != nil
+        if let fork, fork != head {
+            evidence.commits = try sample(["log", "--no-merges", "--no-notes", "--no-show-signature", "--format=%s",
+                                           "-12", fork + ".." + head, "--"], bytes: 1800)
+            evidence.branchFiles = try sample(diff + ["--name-status", fork, head, "--"], bytes: 1300)
+            evidence.branchPatch = try sample(patch + [fork, head, "--"], bytes: 4800)
         }
         evidence.stagedFiles = try sample(diff + ["--cached", "--name-status", head, "--"], bytes: 900)
         evidence.unstagedFiles = try sample(diff + ["--name-status", "--"], bytes: 900)
@@ -430,7 +479,8 @@ enum Inventory {
         guard try git(path, ["rev-parse", "--verify", "HEAD"]).line() == head else {
             throw InventoryError("Checkout changed. Analyze again.")
         }
-        return evidence
+        let stable = try fingerprint != nil && Self.fingerprint(path: path, head: head, fork: fork) == fingerprint
+        return .changed(evidence, fingerprint: stable ? fingerprint : nil)
     }
 
     private static func history(_ repo: String, _ checkout: Checkout) throws -> Result<MergeEvidence, CleanupBlocker> {

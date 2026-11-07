@@ -127,6 +127,8 @@ private struct SavedTaskDescription: Codable {
     let text: String
     let source: String
     let analyzedAt: Date
+    var fingerprint: String?
+    var model: String?
 }
 
 @MainActor
@@ -150,11 +152,18 @@ final class Library: ObservableObject {
         return TaskDescription(text: "Branch history unavailable. Analyze all checks the local changes.", source: "Git")
     }
 
-    func rememberDescription(_ text: String, source: String, for row: CleanupRow, at timestamp: Date) {
+    func previousFingerprint(for row: CleanupRow, model: String) -> String? {
+        guard let saved = savedDescriptions[row.id], saved.head == row.tree.head,
+              saved.branch == row.tree.branch, saved.model == model else { return nil }
+        return saved.fingerprint
+    }
+
+    func rememberDescription(_ text: String, source: String, for row: CleanupRow, at timestamp: Date,
+                             fingerprint: String?, model: String) {
         guard overview?.measuredAt == timestamp,
               projects[row.projectID]?.trees.contains(row.tree) == true else { return }
         savedDescriptions[row.id] = SavedTaskDescription(repo: row.projectID, path: row.tree.path,
-            head: row.tree.head, branch: row.tree.branch, text: text, source: source, analyzedAt: timestamp)
+            head: row.tree.head, branch: row.tree.branch, text: text, source: source, analyzedAt: timestamp, fingerprint: fingerprint, model: model)
         persistDescriptions()
     }
 

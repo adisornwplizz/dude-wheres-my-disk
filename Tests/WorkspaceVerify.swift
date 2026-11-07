@@ -130,12 +130,14 @@ private struct WorkspaceVerify {
         try check(fleet.workspaces.reduce(0) { $0 + $1.linkedBytes } > fleet.linkedBytes, "Fixture did not exercise overlapping memberships")
         try check(fleet.cleanableCount == 3 && fleet.cleanableBytes == linkedSize && !fleet.partial, "Fleet cleanup status incorrect")
         let analyzed = fleet.cleanup.rows[0]
-        restored.rememberDescription("Adds fixture export", source: "Local model", for: analyzed, at: fleet.measuredAt)
+        restored.rememberDescription("Adds fixture export", source: "Local model", for: analyzed, at: fleet.measuredAt, fingerprint: "saved", model: "test-model")
         restored.refreshMinutes = 0
         let manual = Library(defaults: defaults)
         manual.startMonitoring()
         try await finish(manual)
         try check(manual.overview == nil && manual.selected?.projects.first?.trees.count == 1, "Off should restore registrations without a disk scan")
+        try check(manual.previousFingerprint(for: analyzed, model: "test-model") == "saved"
+                  && manual.previousFingerprint(for: analyzed, model: "different") == nil, "Wrong restored model cache")
         let persisted = manual.taskDescription(repo: analyzed.projectID, tree: analyzed.tree)
         try check(persisted.text == "Adds fixture export" && persisted.source.hasPrefix("Local model"), "Task description lost after restart")
         let updated = Checkout(path: analyzed.tree.path, branch: analyzed.tree.branch, head: "different", locked: false, missing: false)

@@ -1,4 +1,5 @@
 import SwiftUI
+import CryptoKit
 
 private typealias BatchState<Value> = State<Value>
 
@@ -119,6 +120,10 @@ final class WorkspaceAnalysisSession: ObservableObject {
     @Published private(set) var progress: String?
     @Published private(set) var reply: String?
     @Published private(set) var problem: String?
+    @Published private(set) var resultLabel: String?
+    private let defaults: UserDefaults
+    init(defaults: UserDefaults = .standard) { self.defaults = defaults }
+
     private(set) var runID: UUID?
     private var task: Task<Void, Never>?
     private var snapshot: Date?
@@ -143,30 +148,39 @@ final class WorkspaceAnalysisSession: ObservableObject {
         runID = usageID
         problem = nil
         reply = nil
+        resultLabel = nil
         progress = "Reading local changes…"
         task = Task {
             defer { if !Task.isCancelled { progress = nil; task = nil } }
             let session = OllamaLocal.makeSession()
             defer { session.invalidateAndCancel() }
             var useModel = !model.isEmpty
+            var reused = 0
+            var updated = 0
             for (index, item) in assessment.items.enumerated() {
                 guard !Task.isCancelled, library.overview?.measuredAt == timestamp else { return }
                 let row = item.row
-                progress = "Summarizing worktree \(index + 1) of \(assessment.items.count)…"
+                let previous = library.previousFingerprint(for: row, model: model)
+                progress = "Checking changes in worktree \(index + 1) of \(assessment.items.count)…"
                 let worker = Task.detached(priority: .utility) {
-                    try Inventory.changeEvidence(repo: row.projectID, checkout: row.tree)
+                    try Inventory.checkChanges(repo: row.projectID, checkout: row.tree, matching: previous)
                 }
                 do {
-                    let evidence = try await withTaskCancellationHandler(operation: { try await worker.value },
+                    let check = try await withTaskCancellationHandler(operation: { try await worker.value },
                                                                          onCancel: { worker.cancel() })
                     try Task.checkCancellation()
-                    library.rememberDescription(evidence.gitSummary, source: "Git analysis", for: row, at: timestamp)
+                    guard case let .changed(evidence, fingerprint) = check else { reused += 1; continue }
+                    updated += 1
+                    library.rememberDescription(evidence.gitSummary, source: "Git analysis", for: row, at: timestamp,
+                                                fingerprint: fingerprint, model: evidence.hasChanges ? "" : model)
                     if useModel && evidence.hasChanges {
                         do {
+                            progress = "Summarizing worktree \(index + 1) of \(assessment.items.count)…"
                             let payload = String(decoding: try JSONEncoder().encode(evidence), as: UTF8.self)
                             let summary = try await OllamaLocal.summarizeChanges(evidence: payload, model: model, session: session, usageID: usageID)
                             try Task.checkCancellation()
-                            library.rememberDescription(summary, source: "Local model", for: row, at: timestamp)
+                            library.rememberDescription(summary, source: "Local model", for: row, at: timestamp,
+                                                        fingerprint: fingerprint, model: model)
                         } catch {
                             if Task.isCancelled { return }
                             problem = "Local model explanation unavailable. Showing Git change details. " + error.localizedDescription
@@ -178,13 +192,27 @@ final class WorkspaceAnalysisSession: ObservableObject {
                     problem = "Some changes could not be read. " + error.localizedDescription
                 }
             }
-            guard useModel, !Task.isCancelled, library.overview?.measuredAt == timestamp else { return }
+            resultLabel = "\(reused) reused · \(updated) updated"
+            let unread = assessment.items.count - reused - updated
+            if unread > 0 { resultLabel = (resultLabel ?? "") + " · \(unread) unread" }
+            guard useModel, !assessment.items.isEmpty, !Task.isCancelled, library.overview?.measuredAt == timestamp else { return }
             progress = "Analyzing cleanup with Ollama…"
             do {
-                let answer = try await AIClient.analyze(provider: .ollama, model: model, key: "", evidence: assessment.payload, usageID: usageID)
+                let key = Data(SHA256.hash(data: Data((model + "\0" + assessment.payload).utf8))).base64EncodedString()
+                let cacheName = "analysis.fleetAdvice.v1"
+                let answer: String
+                if let cached = defaults.dictionary(forKey: cacheName) as? [String: String],
+                   cached["key"] == key, let text = cached["answer"] {
+                    answer = text
+                } else {
+                    guard updated > 0 else { return }
+                    answer = try await AIClient.analyze(provider: .ollama, model: model, key: "",
+                                                        evidence: assessment.payload, usageID: usageID)
+                }
                 try Task.checkCancellation()
                 guard library.overview?.measuredAt == timestamp else { return }
                 let suggestions = try BatchSuggestions.read(answer, matching: assessment)
+                defaults.set(["key": key, "answer": answer], forKey: cacheName)
                 reply = suggestions.summary
                 library.saveAdvice(suggestions.advice, measuredAt: timestamp)
             } catch {
@@ -310,11 +338,12 @@ struct AllWorkspacesAnalysisView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(verbatim: row.tree.branch ?? URL(fileURLWithPath: row.tree.path).lastPathComponent)
                         .font(.headline).lineLimit(1).truncationMode(.middle)
-                    Text(verbatim: URL(fileURLWithPath: row.projectID).lastPathComponent + " · " + (row.detail ?? row.category.title))
+                    Text(verbatim: URL(fileURLWithPath: row.projectID).lastPathComponent)
                         .font(.callout).foregroundStyle(.secondary)
                 }.frame(maxWidth: .infinity, alignment: .leading).help(row.tree.path)
                 Text(row.bytes.map(diskSize) ?? "Size unknown").font(.callout.monospacedDigit())
             }
+            CleanStatus(category: row.category, reason: row.detail, merge: row.mergeEvidence)
             WorktreeChangeCard(description: library.taskDescription(repo: row.projectID, tree: row.tree),
                                clean: row.category == .cleanable ? { prepareCleanup(row) } : nil,
                                busy: library.activity != nil || cleaning != nil)

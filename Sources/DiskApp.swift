@@ -48,6 +48,9 @@ private struct DiskWindow: View {
     var body: some View {
         VStack(spacing: 0) {
             StudioMasthead {
+                if analysis.progress == nil, library.activity == nil, let label = analysis.resultLabel {
+                    Text(verbatim: label).font(.callout).foregroundStyle(.secondary)
+                }
                 Button("Analyze all") { analyzeAll() }
                 .buttonStyle(.borderedProminent)
                 .disabled(library.workspaces.isEmpty || library.activity != nil || analysis.progress != nil)
@@ -379,18 +382,7 @@ private struct DiskWindow: View {
                     }
                     Text(tree.branch ?? URL(fileURLWithPath: tree.path).lastPathComponent)
                         .font(.headline).textSelection(.enabled)
-                    if let result {
-                        if let reason = result.reason {
-                            Label(reason, systemImage: reason.hasPrefix("In use by ") ? "waveform.path.ecg" : "info.circle")
-                                .font(.callout).foregroundStyle(.secondary)
-                        } else {
-                            Label("Cleanable · verified by Git", systemImage: "checkmark.circle")
-                                .font(.callout).foregroundStyle(Studio.accent)
-                        }
-                    } else {
-                        Text(tree.locked ? "Locked" : tree.missing ? "Missing folder" : "Awaiting local scan")
-                            .font(.callout).foregroundStyle(.secondary)
-                    }
+                    CleanStatus(category: result?.category, reason: result?.reason, merge: result?.mergeEvidence ?? .unchecked)
                     Text(tree.path).font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary).textSelection(.enabled)
                     if let review {
                         if review.nestedCount > 0 {
@@ -441,7 +433,17 @@ private struct DiskWindow: View {
 
 private struct CleanupBrowser<Row: View, Repositories: View>: View {
     private enum Layout { case reasons, largest, repositories }
-    private enum Scope { case review, all }
+    private enum Scope {
+        case review, cleanable, all
+
+        func includes(_ category: CleanupCategory) -> Bool {
+            switch self {
+            case .all: return true
+            case .review: return category.isReviewCandidate
+            case .cleanable: return category == .cleanable
+            }
+        }
+    }
 
     let review: CleanupReview
     let multipleRepos: Bool
@@ -452,7 +454,8 @@ private struct CleanupBrowser<Row: View, Repositories: View>: View {
 
     var body: some View {
         let candidates = review.rows.filter { $0.category.isReviewCandidate }
-        let rows = scope == .all ? review.rows : candidates
+        let ready = review.rows.filter { $0.category == .cleanable }.count
+        let rows = review.rows.filter { scope.includes($0.category) }
 
         HStack(spacing: 12) {
             Picker("Worktree view", selection: $layout) {
@@ -463,7 +466,9 @@ private struct CleanupBrowser<Row: View, Repositories: View>: View {
             .labelsHidden().pickerStyle(.segmented)
             Spacer(minLength: 0)
             if layout != .repositories {
+                Text("\(ready) ready to clean").font(.caption).foregroundStyle(.secondary)
                 Picker("Worktrees shown", selection: $scope) {
+                    Text("Ready to clean (\(ready))").tag(Scope.cleanable)
                     Text("Needs review (\(candidates.count))").tag(Scope.review)
                     Text("All (\(review.rows.count))").tag(Scope.all)
                 }
@@ -476,7 +481,7 @@ private struct CleanupBrowser<Row: View, Repositories: View>: View {
         if layout == .repositories && multipleRepos {
             repositories()
         } else if rows.isEmpty {
-            ContentUnavailableView(scope == .review ? "No worktrees need review" : "No linked worktrees",
+            ContentUnavailableView(scope == .cleanable ? "No worktrees ready to clean" : (scope == .review ? "No worktrees need review" : "No linked worktrees"),
                                    systemImage: "checkmark.circle")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
@@ -493,7 +498,7 @@ private struct CleanupBrowser<Row: View, Repositories: View>: View {
                             Divider()
                         }
                     } else {
-                        ForEach(review.groups.filter { scope == .all || $0.category.isReviewCandidate }) { group in
+                        ForEach(review.groups.filter { scope.includes($0.category) }) { group in
                             DisclosureGroup {
                                 VStack(alignment: .leading, spacing: 0) {
                                     Text(group.category.guidance)

@@ -46,16 +46,52 @@ private struct Verify {
         let changedHead = try checkout("partial").head, cleanHead = try checkout("clean branch").head
         try require(previews[changedHead]?.contains("still unique") == true &&
                     previews[cleanHead]?.hasPrefix("No branch-only") == true, "Launch preview missing or attributed shared work to a branch")
-        let dirtyEvidence = try Inventory.changeEvidence(repo: repo, checkout: checkout("dirty"))
+        func evidence(_ tree: Checkout) throws -> ChangeEvidence {
+            guard case let .changed(value, _) = try Inventory.checkChanges(repo: repo, checkout: tree, matching: nil)
+            else { throw Failure("First run unexpectedly reused") }
+            return value
+        }
+        let dirtyEvidence = try evidence(checkout("dirty"))
         try require(dirtyEvidence.hasBase && dirtyEvidence.stagedPatch.contains("+staged change") &&
                     dirtyEvidence.unstagedPatch.contains("+edited tracked file") &&
                     dirtyEvidence.untrackedNames.contains("untracked.txt"), "Missing working-copy change evidence")
+        func signature(_ tree: Checkout, previous: String? = nil) throws -> String {
+            guard case let .changed(_, fingerprint?) = try Inventory.checkChanges(repo: repo, checkout: tree, matching: previous)
+            else { throw Failure("A changed checkout reused its earlier summary") }
+            return fingerprint
+        }
+        func mustReuse(_ tree: Checkout, _ fingerprint: String) throws {
+            guard case .reused = try Inventory.checkChanges(repo: repo, checkout: tree, matching: fingerprint)
+            else { throw Failure("Unchanged checkout missed its summary cache") }
+        }
+        let dirty = try checkout("dirty")
+        let initial = try signature(dirty)
+        try mustReuse(dirty, initial)
+        let tracked = URL(fileURLWithPath: dirty.path).appendingPathComponent("readme")
+        try Data("another local edit".utf8).write(to: tracked)
+        let changed = try signature(dirty, previous: initial)
+        let untracked = URL(fileURLWithPath: dirty.path).appendingPathComponent("untracked.txt")
+        try Data("different content".utf8).write(to: untracked)
+        let edited = try signature(dirty, previous: changed)
+        func git(_ args: [String]) throws {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+            process.arguments = ["-C", dirty.path] + args
+            try process.run(); process.waitUntilExit()
+            try require(process.terminationStatus == 0, "Fixture Git operation failed")
+        }
+        try git(["add", "readme"])
+        let staged = try signature(dirty, previous: edited)
+        try git(["commit", "-qm", "Record a new task commit"])
+        let advanced = try Inventory.list(repo: repo).first { $0.path == dirty.path }!
+        _ = try signature(advanced, previous: staged)
+        try git(["reset", "-q", "--soft", dirty.head])
         let localPayload = String(decoding: try JSONEncoder().encode(dirtyEvidence), as: UTF8.self)
         try require(!localPayload.contains("untracked content must stay out"), "Read an untracked file's contents")
-        let branchEvidence = try Inventory.changeEvidence(repo: repo, checkout: checkout("partial"))
+        let branchEvidence = try evidence(checkout("partial"))
         try require(branchEvidence.branchPatch.contains("+extra change") && branchEvidence.commits.contains("still unique")
                     && !branchEvidence.branchPatch.contains("later main content"), "Included unrelated mainline changes")
-        let unchanged = try Inventory.changeEvidence(repo: repo, checkout: checkout("clean branch"))
+        let unchanged = try evidence(checkout("clean branch"))
         try require(!unchanged.hasChanges && unchanged.hasBase, "Invented a change for an unchanged checkout")
         let unknown = Inspection(bytes: nil, blocker: nil, generatedFolders: []).measured(bytes: nil)
         try require(unknown.category == .uncertain, "Offered Clean with incomplete measurement")

@@ -138,6 +138,23 @@ struct SidebarTokenCard: View {
     }
 }
 
+struct CleanStatus: View {
+    let category: CleanupCategory?
+    let reason: String?
+    let merge: MergeEvidence
+
+    var body: some View {
+        let ready = category == .cleanable
+        VStack(alignment: .leading, spacing: 3) {
+            Label(ready ? "Ready to clean" : (category == nil ? "Awaiting scan" : "Cannot clean yet"),
+                  systemImage: ready ? "checkmark.circle.fill" : "info.circle")
+                .font(.callout.weight(.semibold)).foregroundStyle(ready ? Studio.accent : .primary)
+            Text(verbatim: [merge.label, category == .unmerged ? nil : reason].compactMap { $0 }.joined(separator: " · "))
+                .font(.callout).foregroundStyle(.secondary)
+        }
+    }
+}
+
 struct WorktreeChangeCard: View {
     let description: TaskDescription
     let clean: (() -> Void)?
@@ -153,7 +170,7 @@ struct WorktreeChangeCard: View {
             }
             Spacer(minLength: 4)
             if let clean {
-                Button("Clean…", role: .destructive, action: clean).disabled(busy)
+                Button("Clean…", action: clean).buttonStyle(.borderedProminent).disabled(busy)
             }
         }
         .padding(11).frame(maxWidth: .infinity, alignment: .leading)

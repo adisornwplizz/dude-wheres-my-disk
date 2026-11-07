@@ -96,7 +96,7 @@ private struct Verify {
                     && !branchEvidence.branchPatch.contains("later main content"), "Included unrelated mainline changes")
         let unchanged = try evidence(checkout("clean branch"))
         try require(!unchanged.hasChanges && unchanged.hasBase, "Invented a change for an unchanged checkout")
-        let unknown = Inspection(bytes: nil, blocker: nil, generatedFolders: []).measured(bytes: nil)
+        let unknown = Inspection(bytes: nil, blocker: nil, generatedFolders: []).measured(bytes: nil, reclaimableBytes: nil)
         try require(unknown.category == .uncertain, "Offered Clean with incomplete measurement")
 
         // The configured filter is harmless. The app must refuse a comparison that needs it.
@@ -111,7 +111,7 @@ private struct Verify {
         try git(["config", "--remove-section", "filter.fixture"])
 
         let categories: [String: CleanupCategory] = ["dirty": .modified, "ignored": .ignored, "locked": .locked,
-                                                   "unmerged": .unmerged, "detached": .detached,
+                                                   "detached": .detached,
                                                    "concealed": .uncertain, "merging": .operation]
         for (name, category) in categories {
             let item = try checkout(name)
@@ -123,7 +123,7 @@ private struct Verify {
         try git(["replace", "--graft", "main", "partial-integration"])
         try git(["merge-base", "--is-ancestor", "partial-integration", "main"])
         let rewritten = try Inventory.inspect(repo: repo, checkout: checkout("partial"))
-        try require(rewritten.category == .unmerged, "Replacement history unlocked an unmerged checkout")
+        try require(rewritten.mergeEvidence.integrationUnproven, "Replacement history falsely proved integration")
         try git(["replace", "-d", "main"])
 
         let squashed = try checkout("squashed")
@@ -135,9 +135,23 @@ private struct Verify {
         try require(!evidence.payload.contains(squashed.head) && !evidence.payload.contains(repo)
                     && !evidence.payload.contains("confidential-squash"), "Shared payload leaked local identifiers")
         let partial = try checkout("partial")
-        try require(try Inventory.analysis(repo: repo, checkout: partial).verdict == "Review required",
-                    "Partial integration must stay blocked")
-        try requireRefusal(repo: repo, checkout: partial)
+        try require(try Inventory.analysis(repo: repo, checkout: partial).verdict == "Can remove",
+                    "Unique committed work on a retained branch should be eligible")
+        try requireRefusal(repo: repo, checkout: partial) // Old approval did not cover unmerged work.
+        let loose = URL(fileURLWithPath: partial.path).appendingPathComponent(".env")
+        try Data("private fixture".utf8).write(to: loose)
+        var refusedLateFile = false
+        do { try Inventory.remove(repo: repo, checkout: partial, allowUnverifiedMerge: true) }
+        catch { refusedLateFile = true }
+        try require(refusedLateFile && FileManager.default.fileExists(atPath: loose.path), "Ignored file lost")
+        try FileManager.default.removeItem(at: loose)
+        try Inventory.remove(repo: repo, checkout: partial, allowUnverifiedMerge: true)
+        let restored = partial.path + "-restored"
+        try git(["worktree", "add", "-q", restored, partial.branch!])
+        let reopened = try Inventory.list(repo: repo).first { $0.path == restored }
+        let contents = try String(contentsOfFile: restored + "/secret-tracked-name", encoding: .utf8)
+        try require(reopened?.head == partial.head && contents.contains("extra change"),
+                    "Could not reopen the retained branch at its unique commit")
         let squashArtifacts = try Inventory.inspect(repo: repo, checkout: squashed).generatedFolders
         try require(squashArtifacts == [".yarn/cache", ".yarn/install-state.gz", "dist"], "Ignored artifact confirmation is incomplete")
         try requireRefusal(repo: repo, checkout: squashed)

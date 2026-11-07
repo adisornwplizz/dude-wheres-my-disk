@@ -99,7 +99,20 @@ struct Removal: Identifiable {
     let repo: String
     let tree: Checkout
     let generatedFolders: [String]
+    let branch: String
+    let reclaimableBytes: Int64
+    let merge: MergeEvidence
     var id: String { tree.path }
+
+    init?(repo: String, tree: Checkout, inspection: Inspection) {
+        guard inspection.reason == nil, let branch = tree.branch, let estimate = inspection.reclaimableBytes else { return nil }
+        self.repo = repo
+        self.tree = tree
+        self.branch = branch
+        self.reclaimableBytes = estimate
+        self.generatedFolders = inspection.generatedFolders
+        self.merge = inspection.mergeEvidence
+    }
 }
 
 // A recreated checkout can reuse the same path, branch, and commit.
@@ -414,6 +427,12 @@ final class Library: ObservableObject {
         projects[repo]?.inspectedFiles[tree.id] = marker
     }
 
+    func removalPreview(repo: String, tree: Checkout) -> Removal? {
+        guard let project = projects[repo], project.trees.contains(tree),
+              project.inspectedFiles[tree.id] != nil, let inspection = project.inspections[tree.id] else { return nil }
+        return Removal(repo: repo, tree: tree, inspection: inspection)
+    }
+
     func remove(_ removal: Removal) {
         let tree = removal.tree
         let repo = removal.repo
@@ -428,7 +447,8 @@ final class Library: ObservableObject {
             self.projects[repo]?.inspections.removeValue(forKey: tree.id)
             self.projects[repo]?.inspectedFiles.removeValue(forKey: tree.id)
             try await Task.detached {
-                try Inventory.remove(repo: repo, checkout: tree, approvedGeneratedFolders: removal.generatedFolders)
+                try Inventory.remove(repo: repo, checkout: tree, approvedGeneratedFolders: removal.generatedFolders,
+                                     allowUnverifiedMerge: removal.merge.integrationUnproven)
             }.value
             self.projects[repo]?.trees.removeAll { $0.id == tree.id }
             self.pruneDescriptions()
@@ -579,7 +599,8 @@ private struct StorageScan {
             for (path, item) in reviewed[index].inspections where verifiedByRepo[reviewed[index].id]?.contains(path) == true {
                 let partial = disk.incomplete.contains(path)
                 if partial { incompleteRepos.insert(reviewed[index].id) }
-                reviewed[index].inspections[path] = item.measured(bytes: partial ? nil : disk.sizes[path])
+                reviewed[index].inspections[path] = item.measured(bytes: partial ? nil : disk.sizes[path],
+                    reclaimableBytes: partial || item.reason != nil ? nil : disk.reclaimable(paths: [path]))
             }
         }
         let nesting = CheckoutNesting(projects: reviewed)

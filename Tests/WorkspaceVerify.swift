@@ -81,7 +81,11 @@ private struct WorkspaceVerify {
         lateWorker.arguments = ["90"]
         try lateWorker.run()
         defer { if lateWorker.isRunning { lateWorker.terminate(); lateWorker.waitUntilExit() } }
-        library.remove(Removal(repo: backend.path, tree: previouslyClean, generatedFolders: []))
+        guard let preview = library.removalPreview(repo: backend.path, tree: previouslyClean),
+              preview.branch == previouslyClean.branch, preview.reclaimableBytes > 0 else {
+            throw CheckFailure("Missing branch or reclaim estimate before cleanup")
+        }
+        library.remove(preview)
         try await finish(library)
         try check(FileManager.default.fileExists(atPath: previouslyClean.path) && library.failure?.text.contains("sleep") == true,
                   "Deletion ignored a process started after the scan")

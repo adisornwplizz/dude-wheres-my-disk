@@ -346,7 +346,8 @@ struct AllWorkspacesAnalysisView: View {
             CleanStatus(category: row.category, reason: row.detail, merge: row.mergeEvidence)
             WorktreeChangeCard(description: library.taskDescription(repo: row.projectID, tree: row.tree),
                                nextStep: library.advice(for: row.id),
-                               clean: row.category == .cleanable ? { prepareCleanup(row) } : nil,
+                               removal: library.removalPreview(repo: row.projectID, tree: row.tree),
+                               clean: { pendingRemoval = $0 },
                                busy: library.activity != nil || cleaning != nil)
             if let removal = pendingRemoval, removal.repo == row.projectID, removal.tree.id == row.tree.id {
                 RemovalConfirmation(removal: removal, busy: library.activity != nil,
@@ -360,16 +361,6 @@ struct AllWorkspacesAnalysisView: View {
                 })
             }
         }
-    }
-
-    private func prepareCleanup(_ row: CleanupRow) {
-        let project = library.workspaces.lazy.flatMap(\.projects).first { $0.id == row.projectID }
-        guard let project, project.trees.contains(row.tree), let current = project.inspections[row.tree.id],
-              current.reason == nil else {
-            cleanupMessage = "The local inspection changed. Analyze again before removing this checkout."
-            return
-        }
-        pendingRemoval = Removal(repo: row.projectID, tree: row.tree, generatedFolders: current.generatedFolders)
     }
 
     private func finishCleanup() {
@@ -405,7 +396,11 @@ struct RemovalConfirmation: View {
         VStack(alignment: .leading, spacing: 7) {
             Text("Permanently remove this checkout?").font(.headline)
             Text(verbatim: confirmationName(removal.tree.path)).font(.callout.monospaced()).textSelection(.enabled)
-            Text("Keep branch " + confirmationName(removal.tree.branch ?? "") + ". Close sessions using this folder first.").font(.callout)
+            Text(verbatim: "Estimated space to reclaim: " + diskSize(removal.reclaimableBytes)).font(.callout.bold())
+            Text(verbatim: "Resume from local branch " + confirmationName(removal.branch) + " · " + removal.tree.head.prefix(12))
+                .font(.callout).textSelection(.enabled)
+            Text(verbatim: removal.merge.label).font(.caption).foregroundStyle(.secondary)
+            Text("Close any sessions still writing to this folder.").font(.callout)
             if !removal.generatedFolders.isEmpty {
                 Text("Also removes").font(.callout.bold())
                 ForEach(removal.generatedFolders, id: \.self) { Text(verbatim: confirmationName($0)).font(.caption.monospaced()) }

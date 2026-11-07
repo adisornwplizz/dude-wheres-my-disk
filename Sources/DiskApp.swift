@@ -411,15 +411,10 @@ private struct DiskWindow: View {
                 Button("View worktree report…") { analysisTarget = AnalysisTarget(repo: project.id, tree: tree) }
                     .disabled(library.activity != nil)
             }
-            let clean: (() -> Void)? = result.flatMap { inspection in
-                guard inspection.category == .cleanable else { return nil }
-                return {
-                    library.pendingRemoval = Removal(repo: project.id, tree: tree, generatedFolders: inspection.generatedFolders)
-                }
-            }
             WorktreeChangeCard(description: library.taskDescription(repo: project.id, tree: tree),
                                nextStep: library.advice(for: .init(repo: project.id, path: tree.path)),
-                               clean: clean, busy: library.activity != nil)
+                               removal: library.removalPreview(repo: project.id, tree: tree),
+                               clean: { library.pendingRemoval = $0 }, busy: library.activity != nil)
             if let removal = library.pendingRemoval, removal.repo == project.id, removal.tree.id == tree.id {
                 RemovalConfirmation(removal: removal, busy: library.activity != nil,
                                     cancel: { library.pendingRemoval = nil },

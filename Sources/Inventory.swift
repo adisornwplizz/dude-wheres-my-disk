@@ -27,13 +27,13 @@ func confirmationName(_ raw: String) -> String {
 }
 
 enum CleanupCategory: String, CaseIterable, Hashable, Sendable {
-    case cleanable, inUse, unmerged, detached, modified, untracked, ignored, nested
+    case cleanable, inUse, detached, modified, untracked, ignored, nested
     case locked, primaryBranch, operation, missing, uncertain
 
     var assessmentVerdict: String {
         switch self {
         case .cleanable: return "Can remove"
-        case .uncertain, .unmerged, .detached, .missing: return "Review required"
+        case .uncertain, .detached, .missing: return "Review required"
         default: return "Keep"
         }
     }
@@ -42,7 +42,6 @@ enum CleanupCategory: String, CaseIterable, Hashable, Sendable {
         switch self {
         case .cleanable: return "Cleanable"
         case .inUse: return "In use"
-        case .unmerged: return "Unmerged commits"
         case .detached: return "Detached HEAD"
         case .modified: return "Uncommitted changes"
         case .untracked: return "Untracked files"
@@ -60,7 +59,6 @@ enum CleanupCategory: String, CaseIterable, Hashable, Sendable {
         switch self {
         case .cleanable: return "Review the folder and its contents before confirming removal."
         case .inUse: return "Finish the session using this folder, then rescan."
-        case .unmerged: return "Compare the branch with the local default branch and review its outstanding commits."
         case .detached: return "Check which branch contains HEAD and keep any commits you need on a branch."
         case .modified: return "Review the staged and unstaged changes with git status."
         case .untracked: return "Review the new files and save any work you need to keep."
@@ -90,6 +88,11 @@ enum MergeEvidence: Sendable {
     case ancestor(base: String)
     case matchingTree(base: String, checkpoint: String, outsideCommits: Int)
     case unproven(base: String, outsideCommits: Int)
+
+    var integrationUnproven: Bool {
+        if case .unproven = self { return true }
+        return false
+    }
 
     var label: String {
         switch self {
@@ -134,13 +137,14 @@ struct Inspection: Sendable {
     let blocker: CleanupBlocker?
     let generatedFolders: [String]
     var mergeEvidence: MergeEvidence = .unchecked
+    var reclaimableBytes: Int64?
     var reason: String? { blocker?.detail }
     var category: CleanupCategory { blocker?.category ?? .cleanable }
 
-    func measured(bytes: Int64?) -> Inspection {
-        let sizeBlocker = bytes == nil ? CleanupBlocker(.uncertain, "Could not measure the whole checkout") : nil
+    func measured(bytes: Int64?, reclaimableBytes: Int64?) -> Inspection {
+        let sizeBlocker = bytes == nil || reclaimableBytes == nil ? CleanupBlocker(.uncertain, "Could not measure the whole checkout") : nil
         return Inspection(bytes: bytes, blocker: blocker ?? sizeBlocker, generatedFolders: generatedFolders,
-                          mergeEvidence: mergeEvidence)
+                          mergeEvidence: mergeEvidence, reclaimableBytes: reclaimableBytes)
     }
 }
 
@@ -545,7 +549,8 @@ enum Inventory {
         if !operations.isDisjoint(with: entries) { return .failure(CleanupBlocker(.operation, "Git operation in progress")) }
         let head = try git(checkout.path, ["rev-parse", "--verify", "HEAD"]).line()
         let currentBranch = try git(checkout.path, ["symbolic-ref", "HEAD"]).line()
-        guard head == checkout.head, currentBranch == "refs/heads/" + branch else {
+        let branchHead = try git(repo, ["show-ref", "--verify", "--hash", "refs/heads/" + branch]).line()
+        guard head == checkout.head, branchHead == head, currentBranch == "refs/heads/" + branch else {
             return .failure(CleanupBlocker(.uncertain, "Branch or commit changed. Refresh the repository."))
         }
         let baseTip = try git(repo, ["rev-parse", "--verify", base + "^{commit}"]).line()
@@ -651,10 +656,6 @@ enum Inventory {
         case let .failure(blocker):
             return Inspection(bytes: nil, blocker: blocker, generatedFolders: [])
         case let .success(evidence):
-            if case let .unproven(base, _) = evidence {
-                return Inspection(bytes: nil, blocker: CleanupBlocker(.unmerged, "Commits outside " + base),
-                                  generatedFolders: [], mergeEvidence: evidence)
-            }
             var local = try workingContents(checkout)
             local.mergeEvidence = evidence
             return local
@@ -687,20 +688,28 @@ enum Inventory {
         guard !checkout.missing else { return result }
         let usage = try WorkspaceStorage.measure(paths: [checkout.path])
         let bytes = usage.incomplete.contains(checkout.path) ? nil : usage.sizes[checkout.path]
-        return result.measured(bytes: bytes)
+        return result.measured(bytes: bytes, reclaimableBytes: bytes.map { _ in usage.reclaimable(paths: [checkout.path]) })
     }
 
-    static func remove(repo: String, checkout: Checkout, approvedGeneratedFolders: [String] = []) throws {
+    static func remove(repo: String, checkout: Checkout, approvedGeneratedFolders: [String] = [], allowUnverifiedMerge: Bool = false) throws {
         try validate(repo, checkout)
         guard !checkout.missing else { throw InventoryError("Worktree folder unavailable") }
         try verifyDirectory(repo, checkout)
         let review = try contents(repo, checkout)
         if let reason = review.reason { throw InventoryError(reason) }
+        guard allowUnverifiedMerge || !review.mergeEvidence.integrationUnproven else {
+            throw InventoryError("Review the unmerged commits and confirm which local branch to keep.")
+        }
         guard review.generatedFolders == approvedGeneratedFolders.sorted() else {
             throw InventoryError("Build folders changed. Inspect and confirm this worktree again.")
         }
         if let reason = WorktreeActivity.snapshot().blockingReason(for: checkout.path) {
             throw InventoryError(reason)
+        }
+        try validate(repo, checkout)
+        guard let branch = checkout.branch,
+              try git(repo, ["show-ref", "--verify", "--hash", "refs/heads/" + branch]).line() == checkout.head else {
+            throw InventoryError("The local branch no longer points to the reviewed commit. Scan again.")
         }
         _ = try git(repo, ["worktree", "remove", "--", checkout.path], readTimeout: nil).checked()
     }

@@ -22,7 +22,7 @@ open "build/Dude, Where’s My Disk.app"
 1. Choose **Add Workspace…** and select a project folder. If it contains multiple repositories, choose which ones to include. The app discovers the root repository and repositories in its immediate subfolders.
 2. Select the workspace for a combined view, or a child repository for a narrower scan. **Workspace options (…) → Scan Storage** measures that folder and its registered linked worktrees, including checkouts elsewhere on disk.
 3. Open **By reason** to see the first cleanup blocker for each worktree. Expand a group to see its largest checkouts first. **Largest first** ranks worktrees across reasons. **All** includes checkouts currently in use and those eligible for removal.
-4. Each worktree row shows its local cleanup reason and size. Its **Task description** card shows up to two recent commit subjects unique to the branch, even before you analyze. **Analyze all** adds a timestamped description from Git or your local model. Choose **Clean…** on an eligible row to review the path and generated items. Confirming **Remove Worktree** permanently removes the checkout and keeps its local branch. Added workspaces and their selected repositories are remembered on this Mac.
+4. Each worktree row shows its local cleanup reason and size. Its **Task description** card shows up to two recent commit subjects unique to the branch, even before you analyze. **Analyze all** adds a timestamped description from Git or your local model. Eligible rows show the estimated space returned and the local branch to resume from before you choose **Clean…**. Confirming **Remove Worktree** permanently removes the checkout and keeps its local branch. Added workspaces and their selected repositories are remembered on this Mac.
 
 **On disk** counts allocated space once across overlapping folders and hard links in the selected scope. **Cleanable estimate** counts eligible checkouts and discounts files with surviving hard links outside them. Individual rows show the whole checkout, so the size of a parent can include a child listed elsewhere. APFS snapshots and clones can also reduce the space actually returned to the volume.
 
@@ -50,9 +50,9 @@ The separate cleanup explanation uses aggregate counts and up to 48 anonymized w
 | --- | --- |
 | **Can remove** | Inspect the path and approve the listed generated items if you want to reclaim their space. |
 | **Keep** | Read the specific blocker. Common examples include an active process, uncommitted changes, untracked files, ignored local configuration, or a nested checkout. |
-| **Review required** | Check the reported uncertainty. Examples include detached HEAD, missing folders, and commits whose integration the app could not verify. |
+| **Review required** | Check the reported uncertainty. Examples include detached HEAD, missing folders, and incomplete local checks. |
 
-The app checks the local default branch. Commit ancestry establishes a regular merge. A squash merge can produce a new commit ID, so the app also checks up to 512 first-parent commits on that branch after the fork. An exact match of the entire tracked Git tree establishes that the worktree’s final snapshot appeared in that history. Other commit arrangements can still require manual review.
+The app checks the local default branch. Commit ancestry establishes a regular merge. A squash merge can produce a new commit ID, so the app also checks up to 512 first-parent commits on that branch after the fork. An exact match of the entire tracked Git tree establishes that the worktree’s final snapshot appeared in that history. A checkout with unverified integration can still be removed when the named local branch points at the reviewed commit and the working files and process checks pass. The confirmation shows the branch, commit and estimated reclaimable space. To resume later, run `git worktree add <new-folder> <retained-branch>` from the repository.
 
 Local Git checks disable replacement objects and grafts when reading history. Comparisons that require an external Git filter may need manual review. Checkouts containing submodules also require manual review.
 

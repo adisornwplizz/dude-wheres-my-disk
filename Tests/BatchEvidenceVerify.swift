@@ -35,7 +35,7 @@ private struct BatchEvidenceVerify {
                    && restored.runs.first?.total == restored.total, "Lost daily, run or lifetime usage after restart")
         try expect(restored.dailyHistory.map(\.value) == [estimated, reported], "Historical daily totals lost usage")
         let secret = "fixture-private-worktree"
-        let categories: [CleanupCategory] = [.unmerged, .inUse, .cleanable, .uncertain]
+        let categories: [CleanupCategory] = [.detached, .inUse, .cleanable, .uncertain]
         let ranked = (0..<128).map { index -> CleanupRow in
             let tree = Checkout(path: "/" + secret + "/tree-\(index)", branch: secret, head: secret, locked: false, missing: false)
             return CleanupRow(projectID: "/" + secret, tree: tree, category: categories[index % categories.count],

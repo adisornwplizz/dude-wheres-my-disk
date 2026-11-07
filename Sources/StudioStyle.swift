@@ -166,7 +166,7 @@ struct CleanStatus: View {
             Label(ready ? "Ready to clean" : (category == nil ? "Awaiting scan" : "Cannot clean yet"),
                   systemImage: ready ? "checkmark.circle.fill" : "info.circle")
                 .font(.callout.weight(.semibold)).foregroundStyle(ready ? Studio.accent : .primary)
-            Text(verbatim: [merge.label, category == .unmerged ? nil : reason].compactMap { $0 }.joined(separator: " · "))
+            Text(verbatim: [merge.label, reason].compactMap { $0 }.joined(separator: " · "))
                 .font(.callout).foregroundStyle(.secondary)
         }
     }
@@ -175,24 +175,30 @@ struct CleanStatus: View {
 struct WorktreeChangeCard: View {
     let description: TaskDescription
     let nextStep: String?
-    let clean: (() -> Void)?
+    let removal: Removal?
+    let clean: (Removal) -> Void
     let busy: Bool
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Task description").font(.callout.weight(.semibold))
-                Text(verbatim: description.text).font(.callout).textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
-                if let nextStep {
-                    Text("Model suggestion").font(.caption.weight(.semibold)).padding(.top, 3)
-                    Text(verbatim: nextStep).font(.callout).textSelection(.enabled)
-                }
-                Text(verbatim: description.source).font(.caption).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Task description").font(.callout.weight(.semibold))
+            Text(verbatim: description.text).font(.callout).textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+            if let nextStep {
+                Text("Model suggestion").font(.caption.weight(.semibold)).padding(.top, 3)
+                Text(verbatim: nextStep).font(.callout).textSelection(.enabled)
             }
-            Spacer(minLength: 4)
-            if let clean {
-                Button("Clean…", action: clean).buttonStyle(.borderedProminent).disabled(busy)
+            Text(verbatim: description.source).font(.caption).foregroundStyle(.secondary)
+            if let removal {
+                Divider().padding(.vertical, 3)
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(verbatim: "Reclaim about " + diskSize(removal.reclaimableBytes)).font(.callout.weight(.semibold))
+                        Text(verbatim: "Keep local branch " + confirmationName(removal.branch)).font(.callout).textSelection(.enabled)
+                    }
+                    Spacer(minLength: 6)
+                    Button("Clean…") { clean(removal) }.buttonStyle(.borderedProminent).disabled(busy)
+                }
             }
         }
         .padding(11).frame(maxWidth: .infinity, alignment: .leading)

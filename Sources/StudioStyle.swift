@@ -5,6 +5,8 @@ func diskSize(_ bytes: Int64) -> String {
 }
 
 enum Studio {
+    static let navigationHeaderHeight: CGFloat = 40
+
     static let accent = Color(nsColor: NSColor(name: nil) { appearance in
         appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
             ? NSColor(red: 1, green: 0.59, blue: 0.29, alpha: 1)
@@ -13,6 +15,21 @@ enum Studio {
     static let rail = Color(nsColor: .controlBackgroundColor)
     static let canvas = Color(nsColor: .textBackgroundColor)
     static let rule = Color(nsColor: .separatorColor).opacity(0.68)
+}
+
+struct AnalyzeButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var enabled
+    @Environment(\.colorScheme) private var colorScheme
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.callout.weight(.semibold))
+            .foregroundStyle(colorScheme == .dark ? Color.black : Color.white)
+            .padding(.horizontal, 14)
+            .frame(height: 28)
+            .background(Studio.accent, in: RoundedRectangle(cornerRadius: 6))
+            .opacity(enabled ? (configuration.isPressed ? 0.8 : 1) : 0.5)
+    }
 }
 
 struct StudioCaption: View {

@@ -52,9 +52,9 @@ private struct DiskWindow: View {
                     Text(verbatim: label).font(.callout).foregroundStyle(.secondary)
                 }
                 Button("Analyze all") { analyzeAll() }
-                .buttonStyle(.borderedProminent)
-                .disabled(library.workspaces.isEmpty || library.activity != nil || analysis.progress != nil)
-                .help("Analyze all workspaces on this Mac")
+                    .buttonStyle(AnalyzeButtonStyle())
+                    .disabled(library.workspaces.isEmpty || library.activity != nil || analysis.progress != nil)
+                    .help("Analyze all workspaces on this Mac")
             }
             if let progress = analysis.progress {
                 HStack(spacing: 8) {
@@ -72,7 +72,7 @@ private struct DiskWindow: View {
                         StudioCaption("Workspaces")
                         Spacer()
                     }
-                    .padding(.horizontal, 15).padding(.vertical, 14)
+                    .padding(.horizontal, 15).frame(height: Studio.navigationHeaderHeight)
                     Divider()
                     ScrollView {
                         VStack(alignment: .leading, spacing: 4) {
@@ -260,7 +260,8 @@ private struct DiskWindow: View {
             } label: { Image(systemName: "ellipsis") }
                 .menuStyle(.borderlessButton).fixedSize().accessibilityLabel("Workspace options")
         }
-        .font(.callout).foregroundStyle(.secondary).padding(.horizontal, 22).padding(.vertical, 9)
+        .font(.callout).foregroundStyle(.secondary).padding(.horizontal, 22)
+        .frame(height: Studio.navigationHeaderHeight)
         .background(Studio.rail)
         Divider()
         VStack(alignment: .leading, spacing: 5) {

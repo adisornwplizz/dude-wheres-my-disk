@@ -23,6 +23,9 @@ for name in "clean branch" dirty ignored locked unmerged stale generated conceal
 done
 git -C "$repo" worktree add -q --detach "$case_dir/trees/detached" main
 printf 'edited tracked file\n' > "$case_dir/trees/dirty/readme"
+printf 'staged change\n' > "$case_dir/trees/dirty/staged.txt"
+git -C "$case_dir/trees/dirty" add staged.txt
+printf 'untracked content must stay out\n' > "$case_dir/trees/dirty/untracked.txt"
 git -C "$case_dir/trees/concealed" update-index --assume-unchanged readme
 printf 'edit hidden from status\n' > "$case_dir/trees/concealed/readme"
 mkdir "$case_dir/trees/ignored/local-only"

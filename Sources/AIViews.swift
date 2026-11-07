@@ -324,7 +324,8 @@ struct AIAnalysisView: View {
                     key = saved
                 }
                 try Task.checkCancellation()
-                let answer = try await AIClient.analyze(provider: provider, model: model, key: key, evidence: evidence.payload)
+                let run = TokenUsage.shared.begin(provider.title + " · Worktree report")
+                let answer = try await AIClient.analyze(provider: provider, model: model, key: key, evidence: evidence.payload, usageID: run)
                 try Task.checkCancellation()
                 reply = answer
             } catch {

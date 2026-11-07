@@ -337,13 +337,6 @@ final class Library: ObservableObject {
         }
     }
 
-    func inspect(_ tree: Checkout, in project: Project) {
-        run("Inspecting \(tree.branch ?? "worktree")…") {
-            self.invalidateReports(for: [project.id])
-            try await self.read(tree, in: project.id)
-        }
-    }
-
     private func read(_ tree: Checkout, in repo: String) async throws {
         let marker = FileIdentity(for: tree)
         let result = try await Task.detached { try Inventory.inspect(repo: repo, checkout: tree) }.value
@@ -392,12 +385,12 @@ final class Library: ObservableObject {
         scan([scope], publishOverview: coversFleet, parent: workspace.id)
     }
 
-    func scanAll() {
+    func scanAll(onComplete: ((FleetOverview) -> Void)? = nil) {
         guard !workspaces.isEmpty else { return }
-        scan(workspaces, publishOverview: true, parent: nil)
+        scan(workspaces, publishOverview: true, parent: nil, onComplete: onComplete)
     }
 
-    private func scan(_ scopes: [Workspace], publishOverview: Bool, parent: String?) {
+    private func scan(_ scopes: [Workspace], publishOverview: Bool, parent: String?, onComplete: ((FleetOverview) -> Void)? = nil) {
         run("Reading worktree registrations…") {
             let paths = Set(scopes.flatMap { $0.projects.map(\.id) }).sorted()
             var loaded: [String: Project] = [:]
@@ -434,6 +427,7 @@ final class Library: ObservableObject {
             }
             if publishOverview {
                 self.overview = result.overview
+                onComplete?(result.overview)
                 self.automaticScanPending = false
             }
         }
@@ -514,9 +508,7 @@ private struct StorageScan {
             for (path, item) in reviewed[index].inspections where verifiedByRepo[reviewed[index].id]?.contains(path) == true {
                 let partial = disk.incomplete.contains(path)
                 if partial { incompleteRepos.insert(reviewed[index].id) }
-                let blocker = item.blocker ?? (partial ? CleanupBlocker(.uncertain, "Could not measure the whole checkout") : nil)
-                reviewed[index].inspections[path] = Inspection(bytes: partial ? nil : disk.sizes[path], blocker: blocker,
-                                                               generatedFolders: item.generatedFolders, mergeEvidence: item.mergeEvidence)
+                reviewed[index].inspections[path] = item.measured(bytes: partial ? nil : disk.sizes[path])
             }
         }
         let nesting = CheckoutNesting(projects: reviewed)

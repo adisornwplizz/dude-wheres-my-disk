@@ -20,7 +20,7 @@ open "build/Dude, Where’s My Disk.app"
 1. Choose **Add Workspace…** and select a project folder. If it contains multiple repositories, choose which ones to include. The app discovers the root repository and repositories in its immediate subfolders.
 2. Select the workspace for a combined view, or a child repository for a narrower scan. **Workspace options (…) → Scan Storage** measures that folder and its registered linked worktrees, including checkouts elsewhere on disk.
 3. Open **By reason** to see the first cleanup blocker for each worktree. Expand a group to see its largest checkouts first. **Largest first** ranks worktrees across reasons. **All** includes checkouts currently in use and those eligible for removal.
-4. Choose **Analyze…** on a worktree to see the local verdict, or **Clean…** on an eligible worktree to review the path and generated items. Confirming **Remove Worktree** permanently removes the checkout and keeps its local branch. Added workspaces and their selected repositories are remembered on this Mac.
+4. Each worktree row shows its local cleanup reason and size. After **Analyze all**, its **What changed** card describes the work in that checkout. Choose **Clean…** on an eligible row to review the path and generated items. Confirming **Remove Worktree** permanently removes the checkout and keeps its local branch. Added workspaces and their selected repositories are remembered on this Mac.
 
 **On disk** counts allocated space once across overlapping folders and hard links in the selected scope. **Cleanable estimate** counts eligible checkouts and discounts files with surviving hard links outside them. Individual rows show the whole checkout, so the size of a parent can include a child listed elsewhere. APFS snapshots and clones can also reduce the space actually returned to the volume.
 
@@ -36,9 +36,11 @@ The menu bar shows disk usage for **linked worktrees only**. The **On disk** tot
 
 Close the main window to keep monitoring in the menu bar. Use **Settings…** to select a refresh interval (15 minutes by default, or manual only). **Open App** brings back the full window and **Quit** stops the monitor.
 
-The main window opens on **All workspaces**. Each row shows a checkout, its size, its first cleanup reason and a next step. Choose **Analyze** for a fresh local scan. If a local Ollama model is configured, the app also asks it to explain the results. Progress and recommendations appear in the same window. **Clean…** shows the path and generated items inline before you confirm removal. The local branch stays available.
+The main window opens on **All workspaces**. Each row shows a checkout, its size, its first cleanup reason and a next step. The header’s **Analyze all** checks every added workspace. Your sidebar selection filters the visible results and stays selected while the analysis runs. If a local Ollama model is configured, the app also asks it to explain the results. Progress and recommendations appear in the same window. **Clean…** shows the path and generated items inline before you confirm removal. The local branch stays available.
 
-Ollama receives aggregate counts and up to 48 anonymized worktree entries. Scheduled background scans use local Git and disk checks. Git operates on the refs and objects already present on this Mac.
+For **What changed**, Analyze reads recent branch commit subjects, changed paths and bounded diff excerpts relative to the shared ancestor with the local default branch. It also samples staged and unstaged changes and lists untracked names. With a local model, each checkout gets a separate loopback request for a short Thai explanation. Without one, the card shows Git subjects and filenames. A large diff is sampled, so the description may cover only part of the work. Cleanup eligibility always comes from Git and local checks.
+
+The separate cleanup explanation uses aggregate counts and up to 48 anonymized worktree entries. Optional cloud worktree reports receive only sanitized cleanup facts. Scheduled background scans use local Git and disk checks. Git operates on the refs and objects already present on this Mac.
 
 ## How cleanup decisions work
 
@@ -58,7 +60,11 @@ Before removal, the app rechecks the registration, Git state, generated-item lis
 
 For a single worktree, enable **Allow cloud for individual worktrees** in Settings. This switch defaults to off, including for existing installations. Choose **Configure…**, then select **OpenAI**, **Claude Platform** or **DeepSeek**. Save a provider key in macOS Keychain and use **Connect** to retrieve that provider's model list. Connecting queries the catalog. Sending an analysis is a separate action.
 
-**Analyze…** always shows the local Git verdict and a preview of the evidence JSON. It includes the verdict, first blocker category, merge-proof type and relevant counts. Paths, source code, diffs, branch names and commit messages stay on the Mac. An optional model explains the evidence in Thai. Removing a worktree still requires local checks and your confirmation.
+In a workspace or repository, right-click a worktree and choose **View worktree report…** to see its local Git verdict and preview the evidence JSON. It includes the verdict, first blocker category, merge-proof type and relevant counts. Paths, source code, diffs, branch names and commit messages stay on the Mac. An optional model explains the evidence in Thai. Removing a worktree still requires local checks and your confirmation.
+
+## Token usage
+
+**Settings → Token usage** shows input and output totals for today and all time on this Mac. **Analysis history** shows each Analyze all run or individual model report, including completed requests from a cancelled run. Usage starts when this version is installed. It uses counts returned by the model provider. A total marked **≈** includes estimates based on UTF-8 text size (roughly four bytes per token). A request interrupted before it returns usage can be missing. Git-only checks consume zero model tokens. The history stores timestamps, counts and the type of run locally.
 
 ## Run the tests
 

@@ -111,6 +111,12 @@ struct Inspection: Sendable {
     var mergeEvidence: MergeEvidence = .unchecked
     var reason: String? { blocker?.detail }
     var category: CleanupCategory { blocker?.category ?? .cleanable }
+
+    func measured(bytes: Int64?) -> Inspection {
+        let sizeBlocker = bytes == nil ? CleanupBlocker(.uncertain, "Could not measure the whole checkout") : nil
+        return Inspection(bytes: bytes, blocker: blocker ?? sizeBlocker, generatedFolders: generatedFolders,
+                          mergeEvidence: mergeEvidence)
+    }
 }
 
 struct CleanupEvidence: Sendable {
@@ -151,6 +157,38 @@ struct CleanupEvidence: Sendable {
     }
 }
 
+struct ChangeEvidence: Encodable {
+    var hasBase = false
+    var commits = ""
+    var branchFiles = ""
+    var branchPatch = ""
+    var stagedFiles = ""
+    var stagedPatch = ""
+    var unstagedFiles = ""
+    var unstagedPatch = ""
+    var untrackedNames = ""
+
+    var hasChanges: Bool {
+        [commits, branchFiles, stagedFiles, unstagedFiles, untrackedNames].contains { !$0.isEmpty }
+    }
+
+    var gitSummary: String {
+        var lines: [String] = []
+        if let subject = commits.split(separator: "\n").first {
+            lines.append("Latest branch commit · " + String(subject.prefix(160)))
+        }
+        for (label, sample) in [("Branch files", branchFiles), ("Staged", stagedFiles),
+                                ("Unstaged", unstagedFiles), ("Untracked", untrackedNames)] where !sample.isEmpty {
+            let names = sample.split(separator: "\n").prefix(2).map {
+                String(($0.split(separator: "\t").last ?? $0).prefix(120))
+            }
+            lines.append(label + " · " + names.joined(separator: ", "))
+        }
+        if !hasBase { lines.append("Branch comparison unavailable.") }
+        return lines.isEmpty ? "No branch-only or uncommitted changes found." : lines.joined(separator: "\n")
+    }
+}
+
 private struct InventoryError: LocalizedError {
     let message: String
     init(_ message: String) { self.message = message }
@@ -181,7 +219,7 @@ private struct Output {
 }
 
 enum Inventory {
-    private static func run(_ executable: String, _ arguments: [String], readTimeout: TimeInterval? = 120) throws -> Output {
+    private static func run(_ executable: String, _ arguments: [String], readTimeout: TimeInterval? = 120, captureLimit: Int? = nil) throws -> Output {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
@@ -202,7 +240,7 @@ enum Inventory {
         let data: Data
         if let readTimeout {
             do {
-                data = try readInspection(reader, timeout: readTimeout)
+                data = try readInspection(reader, timeout: readTimeout, captureLimit: captureLimit)
             } catch {
                 if process.isRunning { kill(process.processIdentifier, SIGKILL) }
                 throw error
@@ -214,7 +252,7 @@ enum Inventory {
         return Output(status: process.terminationStatus, data: data)
     }
 
-    private static func readInspection(_ reader: FileHandle, timeout: TimeInterval) throws -> Data {
+    private static func readInspection(_ reader: FileHandle, timeout: TimeInterval, captureLimit: Int?) throws -> Data {
         let clock = ProcessInfo.processInfo
         let deadline = clock.systemUptime + timeout
         var descriptor = pollfd(fd: reader.fileDescriptor, events: Int16(POLLIN), revents: 0)
@@ -232,15 +270,16 @@ enum Inventory {
             if count == 0 { return output }
             if count < 0 && errno == EINTR { continue }
             guard count > 0 else { throw InventoryError("Could not read the local inspection result.") }
-            output.append(buffer, count: count)
+            let kept = captureLimit.map { min(count, $0 - output.count) } ?? count
+            output.append(buffer, count: kept)
         }
     }
 
-    private static func git(_ directory: String, _ arguments: [String], readTimeout: TimeInterval? = 120) throws -> Output {
+    private static func git(_ directory: String, _ arguments: [String], readTimeout: TimeInterval? = 120, captureLimit: Int? = nil) throws -> Output {
         try run("/usr/bin/git", [
             "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
             "-c", "core.untrackedCache=false", "-C", directory
-        ] + arguments, readTimeout: readTimeout)
+        ] + arguments, readTimeout: readTimeout, captureLimit: captureLimit)
     }
 
     private static func canonical(_ path: String) throws -> String {
@@ -331,6 +370,52 @@ enum Inventory {
             try git(repo, ["show-ref", "--verify", "--quiet", $0]).status == 0
         }
         return names.count == 1 ? names[0] : nil
+    }
+
+    /// Only the on-device change-summary pipeline consumes these samples.
+    static func changeEvidence(repo: String, checkout: Checkout) throws -> ChangeEvidence {
+        try validate(repo, checkout)
+        try verifyDirectory(repo, checkout)
+        let path = checkout.path
+        let head = try git(path, ["rev-parse", "--verify", "HEAD"]).line()
+        guard head == checkout.head else { throw InventoryError("Checkout changed. Analyze again.") }
+
+        func sample(_ arguments: [String], bytes: Int) throws -> String {
+            let data = try git(path, arguments, readTimeout: 20, captureLimit: bytes + 1).checked()
+            let text = String(decoding: data.prefix(bytes), as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return data.count > bytes ? text + "\n[…sample truncated…]" : text
+        }
+
+        let diff = ["diff", "--no-ext-diff", "--no-textconv", "--no-color", "--ignore-submodules=all", "--no-renames"]
+        let patch = diff + ["--unified=1"]
+        var evidence = ChangeEvidence()
+        if let base = try mainline(repo) {
+            let result = try git(path, ["merge-base", base, head])
+            if result.status == 0 {
+                let fork = try result.line()
+                evidence.hasBase = true
+                if fork != head {
+                    evidence.commits = try sample(["log", "--no-merges", "--no-notes", "--no-show-signature", "--format=%s",
+                                                   "-12", fork + ".." + head, "--"], bytes: 1800)
+                    evidence.branchFiles = try sample(diff + ["--name-status", fork, head, "--"], bytes: 1300)
+                    evidence.branchPatch = try sample(patch + [fork, head, "--"], bytes: 4800)
+                }
+            } else if result.status != 1 { _ = try result.checked() }
+        }
+        evidence.stagedFiles = try sample(diff + ["--cached", "--name-status", head, "--"], bytes: 900)
+        evidence.unstagedFiles = try sample(diff + ["--name-status", "--"], bytes: 900)
+        if !evidence.stagedFiles.isEmpty {
+            evidence.stagedPatch = try sample(patch + ["--cached", head, "--"], bytes: 2400)
+        }
+        if !evidence.unstagedFiles.isEmpty {
+            evidence.unstagedPatch = try sample(patch + ["--"], bytes: 2400)
+        }
+        evidence.untrackedNames = try sample(["ls-files", "--others", "--exclude-standard", "--directory", "--"], bytes: 700)
+        guard try git(path, ["rev-parse", "--verify", "HEAD"]).line() == head else {
+            throw InventoryError("Checkout changed. Analyze again.")
+        }
+        return evidence
     }
 
     private static func history(_ repo: String, _ checkout: Checkout) throws -> Result<MergeEvidence, CleanupBlocker> {
@@ -482,7 +567,7 @@ enum Inventory {
         guard !checkout.missing else { return result }
         let usage = try WorkspaceStorage.measure(paths: [checkout.path])
         let bytes = usage.incomplete.contains(checkout.path) ? nil : usage.sizes[checkout.path]
-        return Inspection(bytes: bytes, blocker: result.blocker, generatedFolders: result.generatedFolders, mergeEvidence: result.mergeEvidence)
+        return result.measured(bytes: bytes)
     }
 
     static func remove(repo: String, checkout: Checkout, approvedGeneratedFolders: [String] = []) throws {

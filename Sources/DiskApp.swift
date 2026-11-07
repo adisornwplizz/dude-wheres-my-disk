@@ -16,7 +16,8 @@ private struct DiskWindow: View {
     @ObservedObject var status: StatusMonitor
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openSettings) private var openSettings
-    @ViewState private var batchRequest: Task<Void, Never>?
+    @StateObject private var analysis = WorkspaceAnalysisSession()
+    @ObservedObject private var usage = TokenUsage.shared
     @ViewState private var analysisTarget: AnalysisTarget?
     @ViewState private var member: SidebarItem?
     @ViewState private var collapsedWorkspaces: Set<String> = []
@@ -47,15 +48,19 @@ private struct DiskWindow: View {
     var body: some View {
         VStack(spacing: 0) {
             StudioMasthead {
-                Button("Analyze") {
-                    analysisTarget = nil
-                    library.pendingRemoval = nil
-                    status.showAllAnalysis = true
-                    status.analysisRequested = true
-                }
+                Button("Analyze all") { analyzeAll() }
                 .buttonStyle(.borderedProminent)
-                .disabled(library.workspaces.isEmpty || library.activity != nil || batchRequest != nil)
+                .disabled(library.workspaces.isEmpty || library.activity != nil || analysis.progress != nil)
                 .help("Analyze all workspaces on this Mac")
+            }
+            if let progress = analysis.progress {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text(verbatim: progress)
+                    Spacer()
+                    if let run = usage.runs.last(where: { $0.id == analysis.runID }) { Text(run.total.label).monospacedDigit() }
+                    Button("Cancel") { analysis.cancel() }
+                }.font(.callout).padding(.horizontal, 24).padding(.bottom, 8)
             }
             Divider()
             HSplitView {
@@ -97,7 +102,7 @@ private struct DiskWindow: View {
                 VStack(spacing: 0) {
                     if status.showAllAnalysis && !library.workspaces.isEmpty {
                         AllWorkspacesAnalysisView(library: library, options: aiOptions,
-                                                  analysisRequested: $status.analysisRequested, request: $batchRequest)
+                                                  analysis: analysis)
                     } else if let target = analysisTarget {
                         AIAnalysisView(target: target, options: aiOptions, close: { analysisTarget = nil }).id(target.id)
                     } else if let workspace = library.selected {
@@ -128,6 +133,9 @@ private struct DiskWindow: View {
         .alert(item: $library.failure) { failure in
             Alert(title: Text("Operation could not finish"), message: Text(failure.text), dismissButton: .default(Text("OK")))
         }
+        .onChange(of: library.overview?.measuredAt) { _, time in analysis.invalidate(unless: time) }
+        .onChange(of: status.analysisRequested, initial: true) { _, _ in handleMenuAnalysis() }
+        .onChange(of: library.activity) { _, value in if value == nil { handleMenuAnalysis() } }
         .onAppear { status.registerRoutes(openWindow: openWindow, openSettings: openSettings) }
         .sheet(item: $library.repositoryChoices) { choices in
             WorkspacePicker(choices: choices) { selected in
@@ -138,6 +146,26 @@ private struct DiskWindow: View {
             .id(choices.id)
         }
 
+    }
+
+    private func handleMenuAnalysis() {
+        guard status.analysisRequested, library.activity == nil else { return }
+        status.analysisRequested = false
+        if analysis.progress == nil { analyzeAll() }
+    }
+
+    private func analyzeAll() {
+        guard library.activity == nil, analysis.progress == nil, !library.workspaces.isEmpty else { return }
+        analysisTarget = nil
+        library.pendingRemoval = nil
+        let usageID = usage.begin("All workspaces")
+        library.scanAll { snapshot in
+            do {
+                let assessment = try BatchAssessment(snapshot)
+                analysis.analyze(assessment, library: library, model: aiOptions.model(for: .ollama),
+                                 timestamp: snapshot.measuredAt, usageID: usageID)
+            } catch { library.failure = Failure(text: error.localizedDescription) }
+        }
     }
 
     private func sidebarButton(_ title: String, path: String, item: SidebarItem) -> some View {
@@ -252,7 +280,7 @@ private struct DiskWindow: View {
     @ViewBuilder private func reviewContent(workspace: Workspace, child: Project?, standalone: Bool,
                                             shownProjects: [Project], report: StorageReport?) -> some View {
         if let report {
-            CleanupBrowser(review: report.cleanup, worktree: { row in
+            CleanupBrowser(review: report.cleanup, multipleRepos: shownProjects.count > 1, worktree: { row in
                 if let project = shownProjects.first(where: { $0.id == row.projectID }) {
                     treeRow(row.tree, project: project, review: row)
                 }
@@ -349,6 +377,18 @@ private struct DiskWindow: View {
                     }
                     Text(tree.branch ?? URL(fileURLWithPath: tree.path).lastPathComponent)
                         .font(.headline).textSelection(.enabled)
+                    if let result {
+                        if let reason = result.reason {
+                            Label(reason, systemImage: reason.hasPrefix("In use by ") ? "waveform.path.ecg" : "info.circle")
+                                .font(.callout).foregroundStyle(.secondary)
+                        } else {
+                            Label("Cleanable · verified by Git", systemImage: "checkmark.circle")
+                                .font(.callout).foregroundStyle(Studio.accent)
+                        }
+                    } else {
+                        Text(tree.locked ? "Locked" : tree.missing ? "Missing folder" : "Awaiting local scan")
+                            .font(.callout).foregroundStyle(.secondary)
+                    }
                     Text(tree.path).font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary).textSelection(.enabled)
                     if let review {
                         if review.nestedCount > 0 {
@@ -365,36 +405,29 @@ private struct DiskWindow: View {
                         Text("Model suggestion").font(.caption.weight(.semibold)).foregroundStyle(Studio.accent)
                         Text(verbatim: suggestion).font(.callout).textSelection(.enabled)
                     }
-                    if let result {
-                        if let reason = result.reason {
-                            Label(reason, systemImage: reason.hasPrefix("In use by ") ? "waveform.path.ecg" : "info.circle")
-                                .font(.callout).foregroundStyle(.secondary)
-                        } else {
-                            Label("Cleanable · verified by Git", systemImage: "checkmark.circle")
-                                .font(.callout).foregroundStyle(Studio.accent)
-                        }
-                    } else {
-                        Text(tree.locked ? "Locked" : tree.missing ? "Missing folder" : "Awaiting inspection")
-                            .font(.callout).foregroundStyle(.secondary)
-                    }
                 }
                 Spacer(minLength: 6)
                 VStack(alignment: .trailing, spacing: 8) {
                     if let bytes = result?.bytes {
                         Text(diskSize(bytes)).font(.system(.headline, design: .rounded).monospacedDigit())
-                    } else if review != nil {
+                    } else {
                         Text("Size unknown").font(.caption).foregroundStyle(.secondary)
-                    }
-                    Button("Analyze…") { analysisTarget = AnalysisTarget(repo: project.id, tree: tree) }
-                        .help("Check local removal evidence and request an optional AI explanation.")
-                    if let result, result.reason == nil {
-                        Button("Clean…", role: .destructive) { library.pendingRemoval = Removal(repo: project.id, tree: tree, generatedFolders: result.generatedFolders) }
-                    } else if result == nil {
-                        Button("Inspect") { library.inspect(tree, in: project) }
-                            .help("Check Git status and measure this folder’s disk use.")
                     }
                 }.controlSize(.small).disabled(library.activity != nil)
             }
+            .contentShape(Rectangle())
+            .contextMenu {
+                Button("View worktree report…") { analysisTarget = AnalysisTarget(repo: project.id, tree: tree) }
+                    .disabled(library.activity != nil)
+            }
+            let clean: (() -> Void)? = result.flatMap { inspection in
+                guard inspection.category == .cleanable else { return nil }
+                return {
+                    library.pendingRemoval = Removal(repo: project.id, tree: tree, generatedFolders: inspection.generatedFolders)
+                }
+            }
+            WorktreeChangeCard(summary: analysis.summaries[CleanupRow.ID(repo: project.id, path: tree.path)],
+                               clean: clean, busy: library.activity != nil)
             if let removal = library.pendingRemoval, removal.repo == project.id, removal.tree.id == tree.id {
                 RemovalConfirmation(removal: removal, busy: library.activity != nil,
                                     cancel: { library.pendingRemoval = nil },
@@ -409,6 +442,7 @@ private struct CleanupBrowser<Row: View, Repositories: View>: View {
     private enum Scope { case review, all }
 
     let review: CleanupReview
+    let multipleRepos: Bool
     @ViewBuilder let worktree: (CleanupRow) -> Row
     @ViewBuilder let repositories: () -> Repositories
     @ViewState private var layout: Layout = .largest
@@ -422,7 +456,7 @@ private struct CleanupBrowser<Row: View, Repositories: View>: View {
             Picker("Worktree view", selection: $layout) {
                 Text("By reason").tag(Layout.reasons)
                 Text("Largest first").tag(Layout.largest)
-                Text("By repository").tag(Layout.repositories)
+                if multipleRepos { Text("By repository").tag(Layout.repositories) }
             }
             .labelsHidden().pickerStyle(.segmented)
             Spacer(minLength: 0)
@@ -437,7 +471,7 @@ private struct CleanupBrowser<Row: View, Repositories: View>: View {
         .controlSize(.small)
         .padding(.horizontal, 18).padding(.vertical, 9)
         Divider()
-        if layout == .repositories {
+        if layout == .repositories && multipleRepos {
             repositories()
         } else if rows.isEmpty {
             ContentUnavailableView(scope == .review ? "No worktrees need review" : "No linked worktrees",
@@ -446,13 +480,12 @@ private struct CleanupBrowser<Row: View, Repositories: View>: View {
         } else {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
-                    Text(layout == .reasons
-                         ? "Each worktree appears under its first reason. Group sizes on disk can overlap when folders are nested."
-                         : "Sorted by size on disk. Rescan after you resolve the first reason shown.")
-                        .font(.caption).foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 20).padding(.vertical, 8)
-                    if layout == .largest {
+                    if layout == .reasons {
+                        Text("Grouped by first reason. Nested worktree sizes can overlap.")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .padding(.horizontal, 20).padding(.vertical, 8)
+                    }
+                    if layout == .largest || (layout == .repositories && !multipleRepos) {
                         ForEach(rows) { row in
                             worktree(row)
                             Divider()

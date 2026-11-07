@@ -118,6 +118,7 @@ struct MonitorSettings: View {
     @ObservedObject var library: Library
     @ObservedObject var options: AIOptions
     @PanelState private var showAI = false
+    @ObservedObject private var usage = TokenUsage.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -129,7 +130,7 @@ struct MonitorSettings: View {
                 Text("Every 30 minutes").tag(30)
                 Text("Every hour").tag(60)
             }
-            Text("Selected workspaces are remembered on this Mac. Background scans check their linked worktrees while the app is running.")
+            Text("Scans added workspaces while the app is running.")
                 .font(.callout).foregroundStyle(.secondary)
             Divider()
             Label("Workspace analysis runs on this Mac", systemImage: "lock.shield")
@@ -145,6 +146,39 @@ struct MonitorSettings: View {
                 Text(options.allowSingleWorktreeCloud ? options.provider.title : options.model(for: .ollama)).lineLimit(1).foregroundStyle(.secondary)
                 Button("Configure…") { showAI = true }
             }
+            Divider()
+            Text("Token usage").font(.headline)
+            TimelineView(.periodic(from: .now, by: 60)) { context in
+                LabeledContent("Today", value: usage.daily(context.date).label)
+            }
+            LabeledContent("All time", value: usage.total.label)
+            if !usage.runs.isEmpty {
+                DisclosureGroup("Analysis history") {
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 8) {
+                            Text("Daily totals").font(.caption.weight(.semibold))
+                            ForEach(usage.dailyHistory, id: \.key) { day in
+                                LabeledContent(day.key, value: day.value.label).font(.caption.monospacedDigit())
+                            }
+                            Divider()
+                            Text("Per analysis").font(.caption.weight(.semibold))
+                            ForEach(usage.runs.reversed()) { run in
+                                HStack {
+                                    VStack(alignment: .leading) {
+                                        Text(run.label)
+                                        Text(run.started.formatted(date: .abbreviated, time: .standard)).foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    Text(run.total.label).monospacedDigit()
+                                }.font(.caption)
+                            }
+                        }.padding(.vertical, 5)
+                    }.frame(height: min(180, CGFloat(usage.runs.count) * 44 + 88))
+                }
+            }
+            Text("≈ includes estimates. Interrupted requests may have unreported tokens. History starts with version 0.9.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+
         }
         .padding(20).frame(width: 420)
         .tint(Studio.accent)

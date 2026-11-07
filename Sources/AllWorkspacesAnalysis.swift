@@ -114,19 +114,97 @@ struct BatchSuggestions: Decodable {
     }
 }
 
+@MainActor
+final class WorkspaceAnalysisSession: ObservableObject {
+    @Published private(set) var summaries: [CleanupRow.ID: String] = [:]
+    @Published private(set) var progress: String?
+    @Published private(set) var reply: String?
+    @Published private(set) var problem: String?
+    private(set) var runID: UUID?
+    private var task: Task<Void, Never>?
+    private var snapshot: Date?
+
+    func invalidate(unless timestamp: Date?) {
+        guard snapshot != timestamp else { return }
+        cancel()
+        summaries.removeAll()
+        reply = nil
+        problem = nil
+        snapshot = timestamp
+    }
+
+    func cancel() {
+        task?.cancel()
+        task = nil
+        progress = nil
+    }
+
+    func analyze(_ assessment: BatchAssessment, library: Library, model: String, timestamp: Date, usageID: UUID) {
+        cancel()
+        snapshot = timestamp
+        runID = usageID
+        problem = nil
+        reply = nil
+        summaries.removeAll()
+        progress = "Reading local changes…"
+        task = Task {
+            defer { if !Task.isCancelled { progress = nil; task = nil } }
+            let session = OllamaLocal.makeSession()
+            defer { session.invalidateAndCancel() }
+            var useModel = !model.isEmpty
+            for (index, item) in assessment.items.enumerated() {
+                guard !Task.isCancelled, library.overview?.measuredAt == timestamp else { return }
+                let row = item.row
+                progress = "Summarizing worktree \(index + 1) of \(assessment.items.count)…"
+                let worker = Task.detached(priority: .utility) {
+                    try Inventory.changeEvidence(repo: row.projectID, checkout: row.tree)
+                }
+                do {
+                    let evidence = try await withTaskCancellationHandler(operation: { try await worker.value },
+                                                                         onCancel: { worker.cancel() })
+                    try Task.checkCancellation()
+                    summaries[row.id] = evidence.gitSummary
+                    if useModel && evidence.hasChanges {
+                        do {
+                            let payload = String(decoding: try JSONEncoder().encode(evidence), as: UTF8.self)
+                            let summary = try await OllamaLocal.summarizeChanges(evidence: payload, model: model, session: session, usageID: usageID)
+                            try Task.checkCancellation()
+                            summaries[row.id] = summary
+                        } catch {
+                            if Task.isCancelled { return }
+                            problem = "Local model explanation unavailable. Showing Git change details. " + error.localizedDescription
+                            useModel = false
+                        }
+                    }
+                } catch {
+                    if Task.isCancelled { return }
+                    summaries[row.id] = "Change summary unavailable. " + error.localizedDescription
+                }
+            }
+            guard useModel, !Task.isCancelled, library.overview?.measuredAt == timestamp else { return }
+            progress = "Analyzing cleanup with Ollama…"
+            do {
+                let answer = try await AIClient.analyze(provider: .ollama, model: model, key: "", evidence: assessment.payload, usageID: usageID)
+                try Task.checkCancellation()
+                guard library.overview?.measuredAt == timestamp else { return }
+                let suggestions = try BatchSuggestions.read(answer, matching: assessment)
+                reply = suggestions.summary
+                library.saveAdvice(suggestions.advice, measuredAt: timestamp)
+            } catch {
+                if !Task.isCancelled { problem = error.localizedDescription }
+            }
+        }
+    }
+}
+
 struct AllWorkspacesAnalysisView: View {
     @ObservedObject var library: Library
     @ObservedObject var options: AIOptions
-    @Binding var analysisRequested: Bool
-    @Binding var request: Task<Void, Never>?
+    @ObservedObject var analysis: WorkspaceAnalysisSession
+    @ObservedObject private var usage = TokenUsage.shared
     @BatchState private var assessment: BatchAssessment?
-    @BatchState private var awaitingScan = false
-    @BatchState private var queuedAnalysis = false
-    @BatchState private var pendingLocalModel: String?
     @BatchState private var showEvidence = false
-    @BatchState private var reply: String?
     @BatchState private var problem: String?
-    @BatchState private var requestID: UUID?
     @BatchState private var pendingRemoval: Removal?
     @BatchState private var cleaning: Removal?
     @BatchState private var cleanupStartedAt: Date?
@@ -140,7 +218,7 @@ struct AllWorkspacesAnalysisView: View {
                 Label("Only on this Mac", systemImage: "lock.shield").font(.callout).foregroundStyle(.secondary)
             }
             if let snapshot = library.overview, let assessment {
-                Text("\(snapshot.workspaces.count) workspaces · \(assessment.items.count) linked worktrees · \(snapshot.measuredAt.formatted(date: .omitted, time: .shortened))")
+                Text(verbatim: "\(snapshot.workspaces.count) " + (snapshot.workspaces.count == 1 ? "workspace" : "workspaces") + " · \(assessment.items.count) linked " + (assessment.items.count == 1 ? "worktree" : "worktrees") + " · " + snapshot.measuredAt.formatted(date: .omitted, time: .shortened))
                     .font(.callout).foregroundStyle(.secondary)
                 if snapshot.partial || !snapshot.activityAvailable {
                     Label("Incomplete scan or process visibility. Check uncertain worktrees before cleanup.", systemImage: "exclamationmark.triangle")
@@ -165,7 +243,7 @@ struct AllWorkspacesAnalysisView: View {
                 }.padding(12).background(Studio.accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 10) {
-                        if let reply {
+                        if let reply = analysis.reply {
                             Text("Local model explanation").font(.headline)
                             Text(verbatim: reply).textSelection(.enabled)
                             Divider()
@@ -201,71 +279,30 @@ struct AllWorkspacesAnalysisView: View {
                         Text(library.scanProgress?.label ?? activity).font(.callout)
                     }
                     Spacer()
-                    if library.canStop { Button("Stop scan") { pendingLocalModel = nil; awaitingScan = false; library.stop() } }
+                    if library.canStop { Button("Stop scan") { library.stop() } }
                 }
             }
             if let cleanupMessage { Text(verbatim: cleanupMessage).font(.callout).textSelection(.enabled) }
-            if let message = problem ?? (assessment == nil ? library.failure?.text : nil) {
+            if let message = problem ?? analysis.problem ?? (assessment == nil ? library.failure?.text : nil) {
                 Text(verbatim: message).font(.callout).foregroundStyle(.red).textSelection(.enabled)
             }
             Divider()
             HStack {
-                if request != nil {
-                    ProgressView().controlSize(.small)
-                    Text("Analyzing with Ollama…").font(.callout)
-                    Button("Cancel") { resetRequest() }
-                } else {
-                    let model = options.model(for: .ollama)
-                    Text(verbatim: model.isEmpty ? "Local Git checks" : "Ollama · " + model)
-                        .font(.callout).foregroundStyle(.secondary).lineLimit(1)
-                }
+                let model = options.model(for: .ollama)
+                Text(verbatim: model.isEmpty ? "Local Git checks" : "Ollama · " + model)
+                    .font(.callout).foregroundStyle(.secondary).lineLimit(1)
                 Spacer()
+                if let run = usage.runs.last(where: { $0.label == "All workspaces" }) {
+                    Text("Last analysis · " + run.total.label)
+                        .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                }
             }
         }
         .padding(20).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .tint(Studio.accent)
-        .onAppear { rebuild(); handleMenuRequest() }
-        .onChange(of: analysisRequested) { _, requested in if requested { handleMenuRequest() } }
-        .onChange(of: library.overview?.measuredAt) { _, timestamp in
-            rebuild()
-            if awaitingScan, timestamp != nil {
-                awaitingScan = false
-                let model = options.model(for: .ollama)
-                pendingLocalModel = model.isEmpty ? nil : model
-            }
-            continueOnOpen()
-        }
-        .onChange(of: library.activity) { _, activity in
-            if activity == nil {
-                finishCleanup()
-                if queuedAnalysis { handleMenuRequest() }
-                continueOnOpen()
-                if library.failure != nil { awaitingScan = false }
-            }
-        }
-        .onDisappear { pendingLocalModel = nil; resetRequest() }
-    }
-
-    private func startAnalysis() {
-        resetRequest()
-        // Start inference only after this scan publishes a new snapshot.
-        pendingLocalModel = nil
-        awaitingScan = true
-        library.scanAll()
-    }
-
-    private func handleMenuRequest() {
-        guard analysisRequested || queuedAnalysis else { return }
-        analysisRequested = false
-        queuedAnalysis = library.activity != nil
-        if !queuedAnalysis { startAnalysis() }
-    }
-
-    private func continueOnOpen() {
-        guard library.activity == nil, let model = pendingLocalModel,
-              assessment?.items.isEmpty == false, options.model(for: .ollama) == model else { return }
-        pendingLocalModel = nil
-        send()
+        .onAppear { rebuild() }
+        .onChange(of: library.overview?.measuredAt) { _, _ in rebuild() }
+        .onChange(of: library.activity) { _, activity in if activity == nil { finishCleanup() } }
     }
 
     private func itemRow(_ item: BatchAssessment.Item) -> some View {
@@ -280,11 +317,10 @@ struct AllWorkspacesAnalysisView: View {
                         .font(.callout).foregroundStyle(.secondary)
                 }.frame(maxWidth: .infinity, alignment: .leading).help(row.tree.path)
                 Text(row.bytes.map(diskSize) ?? "Size unknown").font(.callout.monospacedDigit())
-                if row.category == .cleanable {
-                    Button("Clean…") { prepareCleanup(row) }
-                        .disabled(library.activity != nil || request != nil || cleaning != nil)
-                }
             }
+            WorktreeChangeCard(summary: analysis.summaries[row.id],
+                               clean: row.category == .cleanable ? { prepareCleanup(row) } : nil,
+                               busy: library.activity != nil || cleaning != nil)
             Text(verbatim: library.advice(for: row.id) ?? row.category.guidance).font(.callout).textSelection(.enabled)
             if let removal = pendingRemoval, removal.repo == row.projectID, removal.tree.id == row.tree.id {
                 RemovalConfirmation(removal: removal, busy: library.activity != nil,
@@ -294,7 +330,6 @@ struct AllWorkspacesAnalysisView: View {
                     cleanupStartedAt = library.overview?.measuredAt
                     priorFailure = library.failure?.id
                     cleanupMessage = nil
-                    pendingLocalModel = nil
                     library.remove(removal)
                 })
             }
@@ -326,44 +361,12 @@ struct AllWorkspacesAnalysisView: View {
     }
 
     private func rebuild() {
-        resetRequest()
+        problem = nil
         do { assessment = try library.overview.map(BatchAssessment.init) }
         catch { assessment = nil; problem = error.localizedDescription }
     }
 
-    private func resetRequest() {
-        request?.cancel()
-        request = nil
-        requestID = nil
-        reply = nil
-        problem = nil
-    }
 
-    @MainActor private func send() {
-        guard request == nil, let assessment, let timestamp = library.overview?.measuredAt else { return }
-        let model = options.model(for: .ollama)
-        let id = UUID()
-        requestID = id
-        reply = nil
-        problem = nil
-        request = Task {
-            defer { if requestID == id { request = nil } }
-            do {
-                let answer = try await AIClient.analyze(provider: .ollama, model: model, key: "", evidence: assessment.payload)
-                try Task.checkCancellation()
-                guard requestID == id, library.overview?.measuredAt == timestamp else { return }
-                do {
-                    let suggestions = try BatchSuggestions.read(answer, matching: assessment)
-                    reply = suggestions.summary
-                    library.saveAdvice(suggestions.advice, measuredAt: timestamp)
-                } catch {
-                    problem = "The model returned an unreadable batch report. Local recommendations remain available. Retry to request the report again."
-                }
-            } catch {
-                if !Task.isCancelled && requestID == id { problem = error.localizedDescription }
-            }
-        }
-    }
 }
 
 struct RemovalConfirmation: View {

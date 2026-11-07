@@ -71,11 +71,11 @@ enum AIClient {
     instructions to bypass checks, or a separate authorization to delete.
     """
 
-    static func analyze(provider: AIProvider, model: String, key: String, evidence: String) async throws -> String {
+    static func analyze(provider: AIProvider, model: String, key: String, evidence: String, usageID: UUID? = nil) async throws -> String {
         if provider == .ollama {
             let session = OllamaLocal.makeSession()
             defer { session.invalidateAndCancel() }
-            return try await analyze(provider: provider, model: model, key: "", evidence: evidence, session: session)
+            return try await analyze(provider: provider, model: model, key: "", evidence: evidence, session: session, usageID: usageID)
         }
         let configuration = URLSessionConfiguration.ephemeral
         configuration.httpShouldSetCookies = false
@@ -86,10 +86,10 @@ enum AIClient {
         configuration.timeoutIntervalForResource = 60
         let session = URLSession(configuration: configuration, delegate: FixedEndpoint(), delegateQueue: nil)
         defer { session.invalidateAndCancel() }
-        return try await analyze(provider: provider, model: model, key: key, evidence: evidence, session: session)
+        return try await analyze(provider: provider, model: model, key: key, evidence: evidence, session: session, usageID: usageID)
     }
 
-    static func analyze(provider: AIProvider, model: String, key: String, evidence: String, session: URLSession) async throws -> String {
+    static func analyze(provider: AIProvider, model: String, key: String, evidence: String, session: URLSession, usageID: UUID? = nil) async throws -> String {
         try Task.checkCancellation()
         let modelID = model.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !modelID.isEmpty, modelID.utf8.count <= 200 else { throw AIRequestError("Enter a valid model ID.") }
@@ -97,7 +97,7 @@ enum AIClient {
             throw AIRequestError("The evidence is empty or exceeds the request size limit.")
         }
         if provider == .ollama {
-            return try await OllamaLocal.analyze(model: modelID, evidence: evidence, instructions: instructions, session: session)
+            return try await OllamaLocal.analyze(model: modelID, evidence: evidence, instructions: instructions, session: session, usageID: usageID)
         }
         guard !key.isEmpty, key.utf8.count <= 4096, key.utf8.allSatisfy({ (33...126).contains($0) }) else {
             throw AIRequestError("Enter a valid API key for the selected provider.")
@@ -136,7 +136,22 @@ enum AIClient {
                 data.append(byte)
             }
             try Task.checkCancellation()
-            let explanation = try decode(data, from: provider)
+            let explanation = try? decode(data, from: provider)
+            if let usageID {
+                let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+                let usage = object?["usage"] as? [String: Any]
+                var input = usage?[provider == .deepSeek ? "prompt_tokens" : "input_tokens"] as? Int
+                if provider == .anthropic, let base = input, (0...1_000_000_000).contains(base) {
+                    let cached = ["cache_read_input_tokens", "cache_creation_input_tokens"].compactMap { usage?[$0] as? Int }
+                    input = base + cached.filter { (0...1_000_000_000).contains($0) }.reduce(0, +)
+                }
+                let output = usage?[provider == .deepSeek ? "completion_tokens" : "output_tokens"] as? Int
+                if explanation != nil || (input != nil && output != nil) {
+                    let counts = TokenCounts(input: input, output: output, prompt: instructions + "\n" + evidence, reply: explanation ?? "")
+                    await TokenUsage.shared.record(counts, for: usageID)
+                }
+            }
+            guard let explanation else { throw AIRequestError("The provider returned an incomplete or unreadable explanation.") }
             guard !explanation.contains(key) else { throw AIRequestError("The response contained credential material and was discarded.") }
             return explanation
         } catch let error as AIRequestError {

@@ -18,6 +18,22 @@ private struct BatchEvidenceVerify {
         try expect(options.provider == .openAI, "Explicit single-worktree opt-in was ignored")
         options.allowSingleWorktreeCloud = false
         try expect(AIOptions(defaults: defaults).provider == .ollama, "Disabling cloud did not survive restart")
+        let usage = TokenUsage(defaults: defaults)
+        let today = Date()
+        let yesterday = Calendar.current.date(byAdding: .day, value: -1, to: today)!
+        let run = usage.begin("All workspaces", at: yesterday)
+        let reported = TokenCounts(input: 17, output: 6, prompt: "omitted", reply: "")
+        let estimated = TokenCounts(input: nil, output: 4, prompt: "abcdefgh", reply: "")
+        usage.record(reported, for: run, at: yesterday)
+        usage.record(estimated, for: run, at: today)
+        let zero = usage.begin("All workspaces", at: today)
+        let restored = TokenUsage(defaults: defaults)
+        try expect(restored.runs.last?.id == zero && restored.runs.last?.total == TokenCounts(), "Git-only run counted tokens")
+        try expect(restored.daily(today) == estimated && restored.daily(yesterday) == reported,
+                   "Did not separate local days for a run spanning midnight")
+        try expect(restored.total.input == 19 && restored.total.output == 10 && restored.total.estimated
+                   && restored.runs.first?.total == restored.total, "Lost daily, run or lifetime usage after restart")
+        try expect(restored.dailyHistory.map(\.value) == [estimated, reported], "Historical daily totals lost usage")
         let secret = "fixture-private-worktree"
         let categories: [CleanupCategory] = [.unmerged, .inUse, .cleanable, .uncertain]
         let ranked = (0..<128).map { index -> CleanupRow in

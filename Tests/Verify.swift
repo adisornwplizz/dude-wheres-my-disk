@@ -42,6 +42,20 @@ private struct Verify {
             return item
         }
 
+        let dirtyEvidence = try Inventory.changeEvidence(repo: repo, checkout: checkout("dirty"))
+        try require(dirtyEvidence.hasBase && dirtyEvidence.stagedPatch.contains("+staged change") &&
+                    dirtyEvidence.unstagedPatch.contains("+edited tracked file") &&
+                    dirtyEvidence.untrackedNames.contains("untracked.txt"), "Missing working-copy change evidence")
+        let localPayload = String(decoding: try JSONEncoder().encode(dirtyEvidence), as: UTF8.self)
+        try require(!localPayload.contains("untracked content must stay out"), "Read an untracked file's contents")
+        let branchEvidence = try Inventory.changeEvidence(repo: repo, checkout: checkout("partial"))
+        try require(branchEvidence.branchPatch.contains("+extra change") && branchEvidence.commits.contains("still unique")
+                    && !branchEvidence.branchPatch.contains("later main content"), "Included unrelated mainline changes")
+        let unchanged = try Inventory.changeEvidence(repo: repo, checkout: checkout("clean branch"))
+        try require(!unchanged.hasChanges && unchanged.hasBase, "Invented a change for an unchanged checkout")
+        let unknown = Inspection(bytes: nil, blocker: nil, generatedFolders: []).measured(bytes: nil)
+        try require(unknown.category == .uncertain, "Offered Clean with incomplete measurement")
+
         let categories: [String: CleanupCategory] = ["dirty": .modified, "ignored": .ignored, "locked": .locked,
                                                    "unmerged": .unmerged, "detached": .detached,
                                                    "concealed": .uncertain, "merging": .operation]

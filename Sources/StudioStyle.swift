@@ -94,3 +94,30 @@ struct StudioWelcome: View {
         .padding(24)
     }
 }
+
+struct WorktreeChangeCard: View {
+    let summary: String?
+    let clean: (() -> Void)?
+    let busy: Bool
+
+    var body: some View {
+        if summary != nil || clean != nil {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    if let summary {
+                        Text("What changed").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                        Text(verbatim: summary).font(.callout).textSelection(.enabled)
+                    } else {
+                        Text("Ready to clean").font(.callout)
+                    }
+                }
+                Spacer(minLength: 4)
+                if let clean {
+                    Button("Clean…", role: .destructive, action: clean).disabled(busy)
+                }
+            }
+            .padding(11).frame(maxWidth: .infinity, alignment: .leading)
+            .background(Studio.accent.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+        }
+    }
+}

@@ -4,13 +4,18 @@ private typealias AIState<Value> = State<Value>
 
 @MainActor
 final class AIOptions: ObservableObject {
-    @Published private(set) var provider: AIProvider
+    @Published private var selectedProvider: AIProvider
+    @Published var allowSingleWorktreeCloud: Bool {
+        didSet { defaults.set(allowSingleWorktreeCloud, forKey: "ai.allowSingleWorktreeCloud") }
+    }
+    var provider: AIProvider { allowSingleWorktreeCloud ? selectedProvider : .ollama }
     @Published private var models: [String: String]
     private let defaults: UserDefaults
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        provider = defaults.string(forKey: "ai.provider").flatMap(AIProvider.init(rawValue:)) ?? .ollama
+        allowSingleWorktreeCloud = defaults.bool(forKey: "ai.allowSingleWorktreeCloud")
+        selectedProvider = defaults.string(forKey: "ai.provider").flatMap(AIProvider.init(rawValue:)) ?? .ollama
         models = defaults.dictionary(forKey: "ai.models") as? [String: String] ?? [:]
     }
 
@@ -21,7 +26,7 @@ final class AIOptions: ObservableObject {
     func save(provider: AIProvider, model: String) {
         models[provider.rawValue] = model
         defaults.set(models, forKey: "ai.models")
-        self.provider = provider
+        selectedProvider = provider
         defaults.set(provider.rawValue, forKey: "ai.provider")
     }
 }
@@ -38,9 +43,11 @@ struct AISettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("AI Settings").font(.title2.bold())
-            Picker("Provider", selection: $provider) {
-                ForEach(AIProvider.allCases) { item in Text(item.title).tag(item) }
+            Text("Analysis models").font(.title2.bold())
+            if options.allowSingleWorktreeCloud {
+                Picker("Single-worktree provider", selection: $provider) {
+                    ForEach(AIProvider.allCases) { item in Text(item.title).tag(item) }
+                }
             }
             AIConnectionForm(options: options, provider: provider, close: { dismiss() }).id(provider)
         }
@@ -212,12 +219,11 @@ struct AnalysisTarget: Identifiable {
 struct AIAnalysisView: View {
     let target: AnalysisTarget
     @ObservedObject var options: AIOptions
-    @Environment(\.dismiss) private var dismiss
+    let close: () -> Void
     @AIState private var evidence: CleanupEvidence?
     @AIState private var errorMessage: String?
     @AIState private var reply: String?
     @AIState private var request: Task<Void, Never>?
-    @AIState private var showSettings = false
     @AIState private var generation = 0
 
     var body: some View {
@@ -252,28 +258,28 @@ struct AIAnalysisView: View {
             }
             Divider()
             if options.provider == .ollama && options.model(for: .ollama).isEmpty {
-                Text("Connect to Ollama in AI Settings and save a model to get a local explanation.")
+                Text("Connect to Ollama in Settings and save a model to get a local explanation.")
                     .font(.callout).foregroundStyle(.secondary)
             }
             HStack {
                 Text(verbatim: [options.provider.title, options.model(for: options.provider)].filter { !$0.isEmpty }.joined(separator: " · "))
                     .font(.callout).lineLimit(1).truncationMode(.middle)
                 Spacer()
-                Button("AI Settings…") { showSettings = true }.disabled(request != nil)
             }
             HStack {
                 Button("Recheck") { clearReview() }.disabled(request != nil || (evidence == nil && errorMessage == nil))
                 Spacer()
-                Button("Close") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Back", action: close).keyboardShortcut(.cancelAction)
                 if request != nil { ProgressView().controlSize(.small) }
                 Button(options.provider == .ollama ? "Analyze locally" : "Send to " + options.provider.title) { send() }
                     .buttonStyle(.borderedProminent)
                     .disabled(request != nil || evidence == nil || options.model(for: options.provider).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
-        .padding(22).frame(width: 570, height: 500)
-        .sheet(isPresented: $showSettings, onDismiss: { reply = nil; if evidence != nil { errorMessage = nil } }) {
-            AISettingsView(options: options)
+        .padding(22).frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onChange(of: options.provider) { _, _ in
+            request?.cancel()
+            reply = nil
         }
         .task(id: generation) { await check() }
         .onDisappear { request?.cancel() }
@@ -312,7 +318,7 @@ struct AIAnalysisView: View {
                 var key = ""
                 if provider != .ollama {
                     guard let saved = try ProviderKeys.read(provider), !saved.isEmpty else {
-                        errorMessage = "Open AI Settings to add a key for " + provider.title + "."
+                        errorMessage = "Open Settings to add a key for " + provider.title + "."
                         return
                     }
                     key = saved

@@ -3,34 +3,18 @@ import SwiftUI
 
 private typealias PanelState<Value> = State<Value>
 
-private func diskSize(_ bytes: Int64) -> String {
-    bytes == 0 ? "0 B" : bytes.formatted(.byteCount(style: .file))
-}
-
-struct MenuBarFootprint: View {
-    @ObservedObject var library: Library
-
-    var body: some View {
-        let value = library.overview.map { ($0.partial ? "≥" : "") + diskSize($0.linkedBytes) } ?? "—"
-        HStack(spacing: 3) {
-            Image(systemName: "externaldrive")
-            Text(value).monospacedDigit()
-        }
-        .accessibilityLabel("Linked worktree storage: " + value)
-    }
-}
-
 struct MenuBarDashboard: View {
     @ObservedObject var library: Library
+    let showLibrary: () -> Void
     let analyze: () -> Void
-    @Environment(\.openWindow) private var openWindow
-    @Environment(\.openSettings) private var openSettings
-    @Environment(\.dismiss) private var dismiss
+    let settings: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
+                    PopoverMascot(busy: library.activity != nil)
+                        .frame(width: 26, height: 26).accessibilityHidden(true)
                     StudioCaption("Linked worktree storage")
                     Spacer()
                     Button { library.scanAll() } label: { Image(systemName: "arrow.clockwise") }
@@ -82,28 +66,16 @@ struct MenuBarDashboard: View {
             }
             Divider()
             VStack(alignment: .leading, spacing: 3) {
-                action("Analyze All Workspaces…", "square.stack.3d.up") {
-                    showLibrary()
-                    analyze()
-                }.disabled(library.workspaces.isEmpty)
+                action("Analyze All Workspaces…", "square.stack.3d.up", analyze)
+                    .disabled(library.workspaces.isEmpty)
                 action("Open App", "macwindow", showLibrary)
-                action("Settings…", "gearshape") {
-                    dismiss()
-                    NSApp.activate(ignoringOtherApps: true)
-                    openSettings()
-                }
+                action("Settings…", "gearshape", settings)
                 Divider().padding(.vertical, 3)
                 action("Quit Dude, Where’s My Disk?", "power") { NSApp.terminate(nil) }
             }.padding(8)
         }
         .frame(width: 340)
         .tint(Studio.accent)
-    }
-
-    private func showLibrary() {
-        dismiss()
-        NSApp.activate(ignoringOtherApps: true)
-        openWindow(id: "library")
     }
 
     private func action(_ title: String, _ symbol: String, _ perform: @escaping () -> Void) -> some View {
@@ -113,6 +85,26 @@ struct MenuBarDashboard: View {
                 .padding(.horizontal, 7).padding(.vertical, 5)
                 .contentShape(Rectangle())
         }.buttonStyle(.plain)
+    }
+}
+
+private struct PopoverMascot: NSViewRepresentable {
+    let busy: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private static let idleImage = Bundle.main.url(forResource: "DiskBuddy", withExtension: "gif").flatMap(NSImage.init(contentsOf:))
+    private static let busyImage = Bundle.main.url(forResource: "DiskBuddyScan", withExtension: "gif").flatMap(NSImage.init(contentsOf:))
+
+    func makeNSView(context: Context) -> NSImageView {
+        let view = NSImageView()
+        view.imageScaling = .scaleProportionallyUpOrDown
+        return view
+    }
+
+    func updateNSView(_ view: NSImageView, context: Context) {
+        let image = (busy ? Self.busyImage : Self.idleImage) ?? NSApp.applicationIconImage
+        if view.image !== image { view.image = image }
+        view.animates = !reduceMotion
     }
 }
 
@@ -134,11 +126,18 @@ struct MonitorSettings: View {
             Text("Selected workspaces are remembered on this Mac. Background scans check their linked worktrees while the app is running.")
                 .font(.callout).foregroundStyle(.secondary)
             Divider()
+            Label("Workspace analysis runs on this Mac", systemImage: "lock.shield")
+                .font(.headline)
+            Toggle("Allow cloud for individual worktrees", isOn: $options.allowSingleWorktreeCloud)
+            if options.allowSingleWorktreeCloud {
+                Text("Individual worktrees can send a previewed report when you choose Send. Analyze All always stays local.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
             HStack {
-                Text("Analysis provider")
+                Text(options.allowSingleWorktreeCloud ? "Single-worktree provider" : "Local model")
                 Spacer()
-                Text(options.provider.title).foregroundStyle(.secondary)
-                Button("AI Settings…") { showAI = true }
+                Text(options.allowSingleWorktreeCloud ? options.provider.title : options.model(for: .ollama)).lineLimit(1).foregroundStyle(.secondary)
+                Button("Configure…") { showAI = true }
             }
         }
         .padding(20).frame(width: 420)

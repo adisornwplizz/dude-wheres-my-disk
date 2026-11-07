@@ -1,5 +1,9 @@
 import SwiftUI
 
+func diskSize(_ bytes: Int64) -> String {
+    bytes == 0 ? "0 B" : bytes.formatted(.byteCount(style: .file))
+}
+
 enum Studio {
     static let accent = Color(nsColor: NSColor(name: nil) { appearance in
         appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
@@ -21,7 +25,6 @@ struct StudioCaption: View {
 }
 
 struct StudioMasthead: View {
-    let settings: () -> Void
     var body: some View {
         HStack(spacing: 12) {
             Image(nsImage: NSApp.applicationIconImage)
@@ -31,10 +34,6 @@ struct StudioMasthead: View {
                 .font(.system(size: 20, weight: .bold))
                 .tracking(-0.9)
             Spacer()
-            Button(action: settings) { Label("AI Settings…", systemImage: "slider.horizontal.3") }
-                .buttonStyle(.borderless)
-                .font(.callout.weight(.medium))
-                .help("Configure an optional AI provider")
         }
         .padding(.horizontal, 24).padding(.vertical, 12)
         .background(Studio.canvas)

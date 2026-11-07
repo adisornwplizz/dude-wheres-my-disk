@@ -28,13 +28,17 @@ open "build/Dude, Where’s My Disk.app"
 
 ## Monitor all added workspaces
 
+<img src="Resources/DiskBuddyScan.gif" width="84" alt="An orange floppy disk mascot taking little steps while scanning">
+
+The menu bar uses a monochrome template version of the mascot. It blinks while idle, moves while scanning, and uses a still frame when macOS Reduce Motion is enabled.
+
 The menu bar shows disk usage for **linked worktrees only**. The main workspace's **On disk** total also includes the main checkout. A single pass across the registered workspaces counts overlapping folders and hard links once. The popover shows per-workspace usage, the last scan time and a partial-scan indicator if a folder could not be measured.
 
 Close the main window to keep monitoring in the menu bar. Use **Settings…** to select a refresh interval (15 minutes by default, or manual only). **Open App** brings back the full window and **Quit** stops the monitor.
 
-**Analyze All Workspaces…** ranks the worktrees across all your added projects. It shows the local verdicts and their reasons first. If you have saved an Ollama model, explicitly opening this analysis can also request one local explanation for the batch. For cloud providers, review the evidence and choose **Send to**. During analysis, the progress indicator tracks registrations and checked worktrees. Disk traversal and model inference use a waiting indicator. Each row shows a suggested next step. A **Clean…** button appears on eligible rows and opens a path-specific confirmation. Model advice is tied to the current scan.
+The main window opens on **All workspaces**. Each row shows a checkout, its size, its first cleanup reason and a next step. Choose **Analyze** for a fresh local scan. If a local Ollama model is configured, the app also asks it to explain the results. Progress and recommendations appear in the same window. **Clean…** shows the path and generated items inline before you confirm removal. The local branch stays available.
 
-The model gets aggregate counts and up to 48 anonymized worktree entries. You can match each W identifier to its checkout locally. Scheduled background scans only run local checks.
+Ollama receives aggregate counts and up to 48 anonymized worktree entries. Scheduled background scans use local Git and disk checks. Git operates on the refs and objects already present on this Mac.
 
 ## How cleanup decisions work
 
@@ -48,15 +52,11 @@ The app checks the local default branch. Commit ancestry establishes a regular m
 
 Before removal, the app rechecks the registration, Git state, generated-item list and visible process activity. It protects a parent checkout when it finds a nested repository marker. Git-ignored directories named `node_modules`, `.build` or `DerivedData`, plus root-relative `dist/`, `.yarn/cache/` and `.yarn/install-state.gz`, may be included after explicit confirmation. Approval covers everything inside each listed directory. A file such as a root-level ignored `.env` blocks removal.
 
-## Review local branches
-
-Choose **Local Branches…**, select a repository, then click **Check upstreams**. This explicit check reads its configured remote branch lists. The result reflects the branches the remote advertises to your account. An unavailable remote produces an unknown result. The app suggests a local branch only when its configured upstream is absent, its tip is merged by ancestry into the local default branch, and no checkout uses it. Review the local ref and its tip before confirming. The app rechecks and uses Git's non-forced branch deletion. This command only acts on the selected local repository.
-
 ## Optional AI explanations
 
-**Ollama (Local)** is the first choice on a fresh installation. With Ollama running and a chat model installed, open **AI Settings…**, press **Connect**, choose an installed model, and press **Save**. The app uses the standard loopback address `http://127.0.0.1:11434`. Model discovery fetches metadata. Inference starts when you select **Analyze locally** on a worktree. The app requires a local model and uses Ollama's local-only model selector. [Ollama API](https://docs.ollama.com/api)
+**Ollama (Local)** is the first choice on a fresh installation. With Ollama running and a chat model installed, open **Settings → Configure…**, press **Connect**, choose an installed model, and press **Save**. The app uses the standard loopback address `http://127.0.0.1:11434`. Model discovery fetches metadata. Inference starts when you select **Analyze locally** on a worktree. The app requires a local model and uses Ollama's local-only model selector. [Ollama API](https://docs.ollama.com/api)
 
-To use a cloud model, explicitly choose **OpenAI**, **Claude Platform** or **DeepSeek**. Save a provider key in macOS Keychain and use **Connect** to retrieve that provider's model list. Connecting queries the catalog. Sending an analysis is a separate action.
+For a single worktree, enable **Allow cloud for individual worktrees** in Settings. This switch defaults to off, including for existing installations. Choose **Configure…**, then select **OpenAI**, **Claude Platform** or **DeepSeek**. Save a provider key in macOS Keychain and use **Connect** to retrieve that provider's model list. Connecting queries the catalog. Sending an analysis is a separate action.
 
 **Analyze…** always shows the local Git verdict and a preview of the evidence JSON. It includes the verdict, first blocker category, merge-proof type and relevant counts. Paths, source code, diffs, branch names and commit messages stay on the Mac. An optional model explains the evidence in Thai. Removing a worktree still requires local checks and your confirmation.
 
@@ -68,7 +68,6 @@ To use a cloud model, explicitly choose **OpenAI**, **Claude Platform** or **Dee
 ./Tests/verify-storage.sh
 ./Tests/verify-ai.sh
 ./Tests/verify-batch.sh
-./Tests/verify-branches.sh
 ```
 
 The tests exercise Git cleanup using disposable repositories, workspace discovery, process activity, disk accounting and provider request handling. The AI test intercepts requests with dummy credentials.

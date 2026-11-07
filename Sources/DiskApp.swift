@@ -13,9 +13,9 @@ private enum SidebarItem: Hashable {
 private struct DiskWindow: View {
     @ObservedObject var library: Library
     @ObservedObject var aiOptions: AIOptions
-    @Binding var showAllAnalysis: Bool
-    @ViewState private var showAISettings = false
-    @ViewState private var showBranchReview = false
+    @ObservedObject var status: StatusMonitor
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettings
     @ViewState private var analysisTarget: AnalysisTarget?
     @ViewState private var member: SidebarItem?
     @ViewState private var collapsedWorkspaces: Set<String> = []
@@ -27,6 +27,9 @@ private struct DiskWindow: View {
                workspace.projects.contains(where: { $0.id == path }) { return member }
             return .workspace(workspace.id)
         }, set: { item in
+            status.showAllAnalysis = false
+            analysisTarget = nil
+            library.pendingRemoval = nil
             switch item {
             case .workspace(let id):
                 member = nil
@@ -43,15 +46,7 @@ private struct DiskWindow: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 0) {
-                StudioMasthead { showAISettings = true }
-                Button {
-                    showAllAnalysis = true
-                } label: {
-                    Label("Analyze All Workspaces…", systemImage: "square.stack.3d.up")
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(library.workspaces.isEmpty)
-                .padding(.trailing, 20)
+                StudioMasthead()
             }.background(Studio.canvas)
             Divider()
             HSplitView {
@@ -59,15 +54,25 @@ private struct DiskWindow: View {
                     HStack {
                         StudioCaption("Workspaces")
                         Spacer()
-                        Button(action: library.chooseRepository) { Image(systemName: "plus") }
-                            .buttonStyle(.borderless).help("Add Workspace…")
-                            .accessibilityLabel("Add Workspace…")
-                            .keyboardShortcut("o").disabled(library.activity != nil)
                     }
                     .padding(.horizontal, 15).padding(.vertical, 14)
                     Divider()
                     ScrollView {
                         VStack(alignment: .leading, spacing: 4) {
+                            if !library.workspaces.isEmpty {
+                                Button {
+                                    analysisTarget = nil
+                                    library.pendingRemoval = nil
+                                    status.showAllAnalysis = true
+                                } label: {
+                                    Label("All workspaces", systemImage: "square.stack.3d.up")
+                                        .font(.callout.weight(.semibold)).frame(maxWidth: .infinity, alignment: .leading)
+                                        .padding(8)
+                                        .background(status.showAllAnalysis ? Studio.accent.opacity(0.13) : Color.clear,
+                                                    in: RoundedRectangle(cornerRadius: 6))
+                                }.buttonStyle(.plain)
+                                Divider()
+                            }
                             ForEach(library.workspaces) { workspace in sidebarRows(workspace) }
                         }.padding(8)
                     }.frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -76,12 +81,17 @@ private struct DiskWindow: View {
                     Button(action: library.chooseRepository) {
                         Label("Add Workspace…", systemImage: "folder.badge.plus")
                             .frame(maxWidth: .infinity, alignment: .leading)
-                    }.buttonStyle(.plain).padding(15).disabled(library.activity != nil)
+                    }.buttonStyle(.plain).padding(15).keyboardShortcut("o").disabled(library.activity != nil)
                 }.background(Studio.rail)
                 .frame(minWidth: 160, idealWidth: 198, maxWidth: 300)
 
                 VStack(spacing: 0) {
-                    if let workspace = library.selected {
+                    if status.showAllAnalysis && !library.workspaces.isEmpty {
+                        AllWorkspacesAnalysisView(library: library, options: aiOptions,
+                                                  analysisRequested: $status.analysisRequested)
+                    } else if let target = analysisTarget {
+                        AIAnalysisView(target: target, options: aiOptions, close: { analysisTarget = nil }).id(target.id)
+                    } else if let workspace = library.selected {
                         VStack(alignment: .leading, spacing: 0) {
                             workspaceView(workspace)
                         }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -89,7 +99,7 @@ private struct DiskWindow: View {
                     } else {
                         StudioWelcome(add: library.chooseRepository, busy: library.activity != nil)
                     }
-                    if let activity = library.activity {
+                    if !status.showAllAnalysis, let activity = library.activity {
                         Divider()
                         HStack {
                             if let progress = library.scanProgress, let done = progress.completed, let total = progress.total, total > 0 {
@@ -109,16 +119,7 @@ private struct DiskWindow: View {
         .alert(item: $library.failure) { failure in
             Alert(title: Text("Operation could not finish"), message: Text(failure.text), dismissButton: .default(Text("OK")))
         }
-        .sheet(isPresented: $showAllAnalysis) {
-            AllWorkspacesAnalysisView(library: library, options: aiOptions)
-        }
-        .sheet(isPresented: $showBranchReview) { BranchReviewView(library: library) }
-        .sheet(isPresented: $showAISettings) {
-            AISettingsView(options: aiOptions)
-        }
-        .sheet(item: $analysisTarget) { target in
-            AIAnalysisView(target: target, options: aiOptions).id(target.id)
-        }
+        .onAppear { status.registerRoutes(openWindow: openWindow, openSettings: openSettings) }
         .sheet(item: $library.repositoryChoices) { choices in
             WorkspacePicker(choices: choices) { selected in
                 library.addWorkspace(choices, selected: selected)
@@ -127,36 +128,11 @@ private struct DiskWindow: View {
             }
             .id(choices.id)
         }
-        .sheet(item: $library.pendingRemoval) { removal in
-            VStack(alignment: .leading, spacing: 13) {
-                Label("Remove worktree?", systemImage: "trash").font(.title2.bold())
-                Text("This will permanently delete this folder and keep the branch " + (removal.tree.branch ?? "") + ". Close any terminals, builds, or agents using it first.")
-                Text(removal.tree.path).font(.callout.monospaced()).textSelection(.enabled)
-                if !removal.generatedFolders.isEmpty {
-                    Divider()
-                    Text("Included generated items").font(.headline)
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 4) {
-                            ForEach(removal.generatedFolders, id: \.self) { path in
-                                Text(verbatim: path).font(.callout.monospaced()).textSelection(.enabled)
-                            }
-                        }.frame(maxWidth: .infinity, alignment: .leading)
-                    }.frame(maxHeight: 130)
-                }
-                HStack {
-                    Spacer()
-                    Button("Cancel") { library.pendingRemoval = nil }.keyboardShortcut(.cancelAction)
-                    Button("Remove Worktree", role: .destructive) {
-                        library.pendingRemoval = nil
-                        library.remove(removal)
-                    }
-                }.padding(.top, 5)
-            }.padding(24).frame(width: 470)
-        }
+
     }
 
     private func sidebarButton(_ title: String, path: String, item: SidebarItem) -> some View {
-        let selected = sidebarSelection.wrappedValue == item
+        let selected = !status.showAllAnalysis && sidebarSelection.wrappedValue == item
         return Button {
             sidebarSelection.wrappedValue = item
         } label: {
@@ -229,11 +205,9 @@ private struct DiskWindow: View {
                 Label("Workspace", systemImage: "folder")
             }
             Spacer()
-            Button { showBranchReview = true } label: { Label("Local Branches…", systemImage: "arrow.triangle.branch") }
-                .disabled(library.activity != nil)
-            Button { library.refresh(shownProjects) } label: { Label("Refresh", systemImage: "arrow.clockwise") }
-                .disabled(library.activity != nil).keyboardShortcut("r")
             Menu {
+                Button("Refresh repository list") { library.refresh(shownProjects) }
+                    .disabled(library.activity != nil).keyboardShortcut("r")
                 if let child { forgetButton(child, in: workspace) }
                 else { forgetButton(workspace) }
             } label: { Image(systemName: "ellipsis") }
@@ -345,7 +319,7 @@ private struct DiskWindow: View {
                                         .foregroundStyle(.secondary)
                                 } else {
                                     if let bytes = report?.byRepo[project.id] {
-                                        Text(bytes.formatted(.byteCount(style: .file)))
+                                        Text(diskSize(bytes))
                                             .monospacedDigit()
                                             .help("Measured disk usage for this repository.")
                                     }
@@ -376,61 +350,68 @@ private struct DiskWindow: View {
 
     private func treeRow(_ tree: Checkout, project: Project, review: CleanupRow? = nil) -> some View {
         let result = project.inspections[tree.id]
-        return HStack(alignment: .top, spacing: 12) {
-            Image(systemName: "arrow.triangle.branch").font(.title3)
-                .foregroundStyle(Studio.accent).frame(width: 30, height: 30)
-                .background(Studio.accent.opacity(0.09), in: RoundedRectangle(cornerRadius: 7))
-            VStack(alignment: .leading, spacing: 5) {
-                if review != nil {
-                    Text(project.name.uppercased()).font(.system(size: 9, weight: .bold)).tracking(1.0).foregroundStyle(Studio.accent)
-                }
-                Text(tree.branch ?? URL(fileURLWithPath: tree.path).lastPathComponent)
-                    .font(.headline).textSelection(.enabled)
-                Text(tree.path).font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary).textSelection(.enabled)
-                if let review {
-                    if review.nestedCount > 0 {
-                        Label(review.nestedCount == 1 ? "Contains 1 linked worktree" : "Contains \(review.nestedCount) linked worktrees",
-                              systemImage: "point.3.connected.trianglepath.dotted")
-                            .font(.caption).foregroundStyle(.secondary)
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "arrow.triangle.branch").font(.title3)
+                    .foregroundStyle(Studio.accent).frame(width: 30, height: 30)
+                    .background(Studio.accent.opacity(0.09), in: RoundedRectangle(cornerRadius: 7))
+                VStack(alignment: .leading, spacing: 5) {
+                    if review != nil {
+                        Text(project.name.uppercased()).font(.system(size: 9, weight: .bold)).tracking(1.0).foregroundStyle(Studio.accent)
                     }
-                    if let parent = review.parentPath {
-                        Text("Inside " + URL(fileURLWithPath: parent).lastPathComponent)
-                            .font(.caption).foregroundStyle(.secondary).help(parent)
+                    Text(tree.branch ?? URL(fileURLWithPath: tree.path).lastPathComponent)
+                        .font(.headline).textSelection(.enabled)
+                    Text(tree.path).font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary).textSelection(.enabled)
+                    if let review {
+                        if review.nestedCount > 0 {
+                            Label(review.nestedCount == 1 ? "Contains 1 linked worktree" : "Contains \(review.nestedCount) linked worktrees",
+                                  systemImage: "point.3.connected.trianglepath.dotted")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        if let parent = review.parentPath {
+                            Text("Inside " + URL(fileURLWithPath: parent).lastPathComponent)
+                                .font(.caption).foregroundStyle(.secondary).help(parent)
+                        }
                     }
-                }
-                if let suggestion = library.advice(for: CleanupRow.ID(repo: project.id, path: tree.path)) {
-                    Text("Model suggestion").font(.caption.weight(.semibold)).foregroundStyle(Studio.accent)
-                    Text(verbatim: suggestion).font(.callout).textSelection(.enabled)
-                }
-                if let result {
-                    if let reason = result.reason {
-                        Label(reason, systemImage: reason.hasPrefix("In use by ") ? "waveform.path.ecg" : "info.circle")
-                            .font(.callout).foregroundStyle(.secondary)
+                    if let suggestion = library.advice(for: CleanupRow.ID(repo: project.id, path: tree.path)) {
+                        Text("Model suggestion").font(.caption.weight(.semibold)).foregroundStyle(Studio.accent)
+                        Text(verbatim: suggestion).font(.callout).textSelection(.enabled)
+                    }
+                    if let result {
+                        if let reason = result.reason {
+                            Label(reason, systemImage: reason.hasPrefix("In use by ") ? "waveform.path.ecg" : "info.circle")
+                                .font(.callout).foregroundStyle(.secondary)
+                        } else {
+                            Label("Cleanable · verified by Git", systemImage: "checkmark.circle")
+                                .font(.callout).foregroundStyle(Studio.accent)
+                        }
                     } else {
-                        Label("Cleanable · verified by Git", systemImage: "checkmark.circle")
-                            .font(.callout).foregroundStyle(Studio.accent)
+                        Text(tree.locked ? "Locked" : tree.missing ? "Missing folder" : "Awaiting inspection")
+                            .font(.callout).foregroundStyle(.secondary)
                     }
-                } else {
-                    Text(tree.locked ? "Locked" : tree.missing ? "Missing folder" : "Awaiting inspection")
-                        .font(.callout).foregroundStyle(.secondary)
                 }
+                Spacer(minLength: 6)
+                VStack(alignment: .trailing, spacing: 8) {
+                    if let bytes = result?.bytes {
+                        Text(diskSize(bytes)).font(.system(.headline, design: .rounded).monospacedDigit())
+                    } else if review != nil {
+                        Text("Size unknown").font(.caption).foregroundStyle(.secondary)
+                    }
+                    Button("Analyze…") { analysisTarget = AnalysisTarget(repo: project.id, tree: tree) }
+                        .help("Check local removal evidence and request an optional AI explanation.")
+                    if let result, result.reason == nil {
+                        Button("Clean…", role: .destructive) { library.pendingRemoval = Removal(repo: project.id, tree: tree, generatedFolders: result.generatedFolders) }
+                    } else if result == nil {
+                        Button("Inspect") { library.inspect(tree, in: project) }
+                            .help("Check Git status and measure this folder’s disk use.")
+                    }
+                }.controlSize(.small).disabled(library.activity != nil)
             }
-            Spacer(minLength: 6)
-            VStack(alignment: .trailing, spacing: 8) {
-                if let bytes = result?.bytes {
-                    Text(bytes.formatted(.byteCount(style: .file))).font(.system(.headline, design: .rounded).monospacedDigit())
-                } else if review != nil {
-                    Text("Size unknown").font(.caption).foregroundStyle(.secondary)
-                }
-                Button("Analyze…") { analysisTarget = AnalysisTarget(repo: project.id, tree: tree) }
-                    .help("Check local removal evidence and request an optional AI explanation.")
-                if let result, result.reason == nil {
-                    Button("Clean…", role: .destructive) { library.pendingRemoval = Removal(repo: project.id, tree: tree, generatedFolders: result.generatedFolders) }
-                } else if result == nil {
-                    Button("Inspect") { library.inspect(tree, in: project) }
-                        .help("Check Git status and measure this folder’s disk use.")
-                }
-            }.controlSize(.small).disabled(library.activity != nil)
+            if let removal = library.pendingRemoval, removal.repo == project.id, removal.tree.id == tree.id {
+                RemovalConfirmation(removal: removal, busy: library.activity != nil,
+                                    cancel: { library.pendingRemoval = nil },
+                                    confirm: { library.pendingRemoval = nil; library.remove(removal) })
+            }
         }.padding(.horizontal, 20).padding(.vertical, 15)
     }
 }
@@ -442,8 +423,8 @@ private struct CleanupBrowser<Row: View, Repositories: View>: View {
     let review: CleanupReview
     @ViewBuilder let worktree: (CleanupRow) -> Row
     @ViewBuilder let repositories: () -> Repositories
-    @ViewState private var layout: Layout = .reasons
-    @ViewState private var scope: Scope = .review
+    @ViewState private var layout: Layout = .largest
+    @ViewState private var scope: Scope = .all
 
     var body: some View {
         let candidates = review.rows.filter { $0.category.isReviewCandidate }
@@ -506,7 +487,7 @@ private struct CleanupBrowser<Row: View, Repositories: View>: View {
                                     Text("\(group.rows.count)").font(.callout.monospacedDigit())
                                         .foregroundStyle(.secondary)
                                     Spacer(minLength: 4)
-                                    Text(group.bytes?.formatted(.byteCount(style: .file)) ?? "Size unknown")
+                                    Text(group.bytes.map(diskSize) ?? "Size unknown")
                                         .font(.callout.monospacedDigit())
                                 }
                                 .padding(.vertical, 9)
@@ -544,8 +525,8 @@ private struct StorageSummary: View {
                 let layout = vertical ? AnyLayout(VStackLayout(alignment: .leading, spacing: 15))
                                       : AnyLayout(HStackLayout(alignment: .top, spacing: 14))
                 layout {
-                    metric("On disk", report.total.formatted(.byteCount(style: .file)))
-                    metric("Cleanable estimate", report.activityAvailable ? report.cleanableBytes.formatted(.byteCount(style: .file)) : "Unknown",
+                    metric("On disk", diskSize(report.total))
+                    metric("Cleanable estimate", report.activityAvailable ? diskSize(report.cleanableBytes) : "Unknown",
                            detail: report.activityAvailable ? "\(report.cleanableCount) worktree\(report.cleanableCount == 1 ? "" : "s")" : nil)
                     metric("Worktrees in use", report.activityAvailable ? String(report.inUseCount) : "Unknown")
                 }
@@ -647,25 +628,26 @@ struct DiskApp: App {
     @NSApplicationDelegateAdaptor(DiskAppDelegate.self) private var appDelegate
     @StateObject private var library: Library
     @StateObject private var aiOptions = AIOptions()
-    @ViewState private var showAllAnalysis = false
+    @StateObject private var status: StatusMonitor
 
     init() {
         let shared = Library()
         shared.startMonitoring()
         _library = StateObject(wrappedValue: shared)
+        _status = StateObject(wrappedValue: StatusMonitor(library: shared))
     }
 
     var body: some Scene {
         Window("Dude, Where’s My Disk?", id: "library") {
-            DiskWindow(library: library, aiOptions: aiOptions, showAllAnalysis: $showAllAnalysis)
+            DiskWindow(library: library, aiOptions: aiOptions, status: status)
         }
         .defaultSize(width: 1120, height: 720)
 
-        MenuBarExtra {
-            MenuBarDashboard(library: library) { showAllAnalysis = true }
-        } label: {
-            MenuBarFootprint(library: library)
-        }.menuBarExtraStyle(.window)
+        .commands {
+            CommandGroup(after: .windowArrangement) {
+                Button("Show Menu Bar Overview") { status.showOverview() }
+            }
+        }
 
         Settings {
             MonitorSettings(library: library, options: aiOptions)

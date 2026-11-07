@@ -7,7 +7,17 @@ private func expect(_ condition: Bool, _ reason: String) throws {
 
 @main
 private struct BatchEvidenceVerify {
-    static func main() throws {
+    @MainActor static func main() throws {
+        let domain = "privacy-fixture-" + UUID().uuidString
+        let defaults = UserDefaults(suiteName: domain)!
+        defer { defaults.removePersistentDomain(forName: domain) }
+        defaults.set(AIProvider.openAI.rawValue, forKey: "ai.provider")
+        let options = AIOptions(defaults: defaults)
+        try expect(options.provider == .ollama, "A saved cloud provider bypassed local-only defaults")
+        options.allowSingleWorktreeCloud = true
+        try expect(options.provider == .openAI, "Explicit single-worktree opt-in was ignored")
+        options.allowSingleWorktreeCloud = false
+        try expect(AIOptions(defaults: defaults).provider == .ollama, "Disabling cloud did not survive restart")
         let secret = "fixture-private-worktree"
         let categories: [CleanupCategory] = [.unmerged, .inUse, .cleanable, .uncertain]
         let ranked = (0..<128).map { index -> CleanupRow in

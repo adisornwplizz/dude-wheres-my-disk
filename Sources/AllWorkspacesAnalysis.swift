@@ -117,12 +117,11 @@ struct BatchSuggestions: Decodable {
 struct AllWorkspacesAnalysisView: View {
     @ObservedObject var library: Library
     @ObservedObject var options: AIOptions
-    @Environment(\.dismiss) private var dismiss
+    @Binding var analysisRequested: Bool
     @BatchState private var assessment: BatchAssessment?
-    @BatchState private var didAppear = false
-    @BatchState private var didStart = false
+    @BatchState private var awaitingScan = false
+    @BatchState private var queuedAnalysis = false
     @BatchState private var pendingLocalModel: String?
-    @BatchState private var showSettings = false
     @BatchState private var showEvidence = false
     @BatchState private var reply: String?
     @BatchState private var problem: String?
@@ -137,9 +136,13 @@ struct AllWorkspacesAnalysisView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("Analyze All Workspaces").font(.title2.bold())
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("All workspaces").font(.title2.bold())
+                    Label("Only on this Mac", systemImage: "lock.shield").font(.callout).foregroundStyle(.secondary)
+                }
                 Spacer()
-                Button("Refresh all") { library.scanAll() }
+                Button("Analyze") { startAnalysis() }
+                    .buttonStyle(.borderedProminent)
                     .disabled(library.activity != nil || request != nil || library.workspaces.isEmpty)
             }
             if let snapshot = library.overview, let assessment {
@@ -149,7 +152,11 @@ struct AllWorkspacesAnalysisView: View {
                     Label("Incomplete scan or process visibility. Check uncertain worktrees before cleanup.", systemImage: "exclamationmark.triangle")
                         .font(.callout).foregroundStyle(.secondary)
                 }
-                HStack(spacing: 22) {
+                HStack(spacing: 16) {
+                    VStack(alignment: .leading) {
+                        StudioCaption("Worktree storage")
+                        Text((snapshot.partial ? "≥ " : "") + diskSize(snapshot.linkedBytes)).font(.title2.bold().monospacedDigit())
+                    }
                     ForEach(["Can remove", "Review required", "Keep"], id: \.self) { verdict in
                         VStack(alignment: .leading) {
                             StudioCaption(verdict)
@@ -159,30 +166,30 @@ struct AllWorkspacesAnalysisView: View {
                     Spacer()
                     VStack(alignment: .trailing) {
                         StudioCaption("Cleanable estimate")
-                        Text(snapshot.activityAvailable ? snapshot.cleanableBytes.formatted(.byteCount(style: .file)) : "Unknown").font(.title2.bold().monospacedDigit())
+                        Text(snapshot.activityAvailable ? diskSize(snapshot.cleanableBytes) : "Unknown").font(.title2.bold().monospacedDigit())
                     }
                 }.padding(12).background(Studio.accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 10) {
                         if let reply {
-                            Text(options.provider == .ollama ? "Local model explanation" : "Provider explanation").font(.headline)
+                            Text("Local model explanation").font(.headline)
                             Text(verbatim: reply).textSelection(.enabled)
                             Divider()
-                        }
-                        DisclosureGroup(isExpanded: $showEvidence) {
-                            Text(verbatim: assessment.payload).font(.caption.monospaced()).textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        } label: {
-                            Text("Preview evidence · \(assessment.shownToModel) of \(assessment.items.count) worktrees")
-                        }
-                        if assessment.shownToModel < assessment.items.count {
-                            Text("Totals cover all worktrees. The model receives details for the first \(assessment.shownToModel) below.")
-                                .font(.caption).foregroundStyle(.secondary)
                         }
                         if assessment.items.isEmpty {
                             Text("No linked worktrees found in the scanned repositories.").foregroundStyle(.secondary)
                         }
                         ForEach(assessment.items) { item in itemRow(item) }
+                        DisclosureGroup(isExpanded: $showEvidence) {
+                            Text(verbatim: assessment.payload).font(.caption.monospaced()).textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        } label: {
+                            Text("Local evidence · \(assessment.shownToModel) of \(assessment.items.count) worktrees")
+                        }
+                        if assessment.shownToModel < assessment.items.count {
+                            Text("Totals cover all worktrees. The model receives details for the first \(assessment.shownToModel) below.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
                     }
                     .padding(.horizontal, 3).frame(maxWidth: .infinity, alignment: .leading)
                 }.frame(maxHeight: .infinity)
@@ -200,7 +207,7 @@ struct AllWorkspacesAnalysisView: View {
                         Text(library.scanProgress?.label ?? activity).font(.callout)
                     }
                     Spacer()
-                    if library.canStop { Button("Stop scan") { pendingLocalModel = nil; library.stop() } }
+                    if library.canStop { Button("Stop scan") { pendingLocalModel = nil; awaitingScan = false; library.stop() } }
                 }
             }
             if let cleanupMessage { Text(verbatim: cleanupMessage).font(.callout).textSelection(.enabled) }
@@ -209,109 +216,93 @@ struct AllWorkspacesAnalysisView: View {
             }
             Divider()
             HStack {
-                Text(verbatim: [options.provider.title, options.model(for: options.provider)].filter { !$0.isEmpty }.joined(separator: " · "))
-                    .font(.callout).lineLimit(1)
-                Button("AI Settings…") { pendingLocalModel = nil; showSettings = true }.disabled(request != nil)
-                Spacer()
-                Button("Close") { dismiss() }.keyboardShortcut(.cancelAction)
                 if request != nil {
                     ProgressView().controlSize(.small)
-                    Text("Analyzing all workspaces…").font(.callout)
+                    Text("Analyzing with Ollama…").font(.callout)
                     Button("Cancel") { resetRequest() }
                 } else {
-                    Button(options.provider == .ollama ? "Analyze locally" : "Send to " + options.provider.title) { send() }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(assessment?.items.isEmpty != false || library.activity != nil || options.model(for: options.provider).isEmpty)
+                    let model = options.model(for: .ollama)
+                    Text(verbatim: model.isEmpty ? "Local Git checks" : "Ollama · " + model)
+                        .font(.callout).foregroundStyle(.secondary).lineLimit(1)
                 }
+                Spacer()
             }
         }
-        .padding(20).frame(minWidth: 620, idealWidth: 690, minHeight: 440, idealHeight: 585)
+        .padding(20).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .tint(Studio.accent)
-        .sheet(isPresented: $showSettings, onDismiss: resetRequest) { AISettingsView(options: options) }
-        .sheet(item: $pendingRemoval) { removal in
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Permanently remove worktree?").font(.title2.bold())
-                Text(verbatim: removal.tree.path).font(.callout.monospaced()).textSelection(.enabled)
-                Text(verbatim: "Keep branch " + (removal.tree.branch ?? "") + ". Close sessions using this checkout first.")
-                if !removal.generatedFolders.isEmpty {
-                    Text("Included generated items").font(.headline)
-                    ScrollView {
-                        VStack(alignment: .leading) {
-                            ForEach(removal.generatedFolders, id: \.self) { Text(verbatim: $0).font(.caption.monospaced()) }
-                        }.frame(maxWidth: .infinity, alignment: .leading)
-                    }.frame(maxHeight: 120)
-                }
-                HStack {
-                    Spacer()
-                    Button("Cancel") { pendingRemoval = nil }.keyboardShortcut(.cancelAction)
-                    Button("Remove Worktree", role: .destructive) {
-                        pendingRemoval = nil
-                        guard library.activity == nil else { return }
-                        cleaning = removal
-                        cleanupStartedAt = library.overview?.measuredAt
-                        priorFailure = library.failure?.id
-                        cleanupMessage = nil
-                        pendingLocalModel = nil
-                        library.remove(removal)
-                    }.disabled(library.activity != nil)
-                }
-            }.padding(22).frame(width: 480)
-        }
-        .onAppear {
-            guard !didAppear else { return }
-            didAppear = true
-            let model = options.model(for: .ollama)
-            if options.provider == .ollama && !model.isEmpty { pendingLocalModel = model }
+        .onAppear { rebuild(); handleMenuRequest() }
+        .onChange(of: analysisRequested) { _, requested in if requested { handleMenuRequest() } }
+        .onChange(of: library.overview?.measuredAt) { _, timestamp in
             rebuild()
+            if awaitingScan, timestamp != nil {
+                awaitingScan = false
+                let model = options.model(for: .ollama)
+                pendingLocalModel = model.isEmpty ? nil : model
+            }
             continueOnOpen()
         }
-        .onChange(of: library.overview?.measuredAt) { _, _ in rebuild(); continueOnOpen() }
         .onChange(of: library.activity) { _, activity in
-            if activity == nil { finishCleanup(); continueOnOpen() }
+            if activity == nil {
+                finishCleanup()
+                if queuedAnalysis { handleMenuRequest() }
+                continueOnOpen()
+                if library.failure != nil { awaitingScan = false }
+            }
         }
         .onDisappear { pendingLocalModel = nil; resetRequest() }
     }
 
+    private func startAnalysis() {
+        resetRequest()
+        // Start inference only after this scan publishes a new snapshot.
+        pendingLocalModel = nil
+        awaitingScan = true
+        library.scanAll()
+    }
+
+    private func handleMenuRequest() {
+        guard analysisRequested || queuedAnalysis else { return }
+        analysisRequested = false
+        queuedAnalysis = library.activity != nil
+        if !queuedAnalysis { startAnalysis() }
+    }
+
     private func continueOnOpen() {
-        guard didAppear, !showSettings, library.activity == nil, !library.workspaces.isEmpty else { return }
-        let fresh = library.overview.map { Date().timeIntervalSince($0.measuredAt) < 300 } ?? false
-        if !didStart {
-            didStart = true
-            if !fresh {
-                library.scanAll()
-                return
-            }
-        }
-        guard fresh, let model = pendingLocalModel, assessment?.items.isEmpty == false,
-              options.provider == .ollama, options.model(for: .ollama) == model else { return }
+        guard library.activity == nil, let model = pendingLocalModel,
+              assessment?.items.isEmpty == false, options.model(for: .ollama) == model else { return }
         pendingLocalModel = nil
         send()
     }
 
     private func itemRow(_ item: BatchAssessment.Item) -> some View {
         let row = item.row
-        return VStack(alignment: .leading, spacing: 4) {
+        return VStack(alignment: .leading, spacing: 5) {
             Divider()
             HStack {
-                Text(item.id).font(.caption.monospaced()).foregroundStyle(Studio.accent)
-                Text(verbatim: row.tree.branch ?? URL(fileURLWithPath: row.tree.path).lastPathComponent)
-                    .font(.headline).lineLimit(1).truncationMode(.middle)
-                Spacer()
-                Text(row.bytes?.formatted(.byteCount(style: .file)) ?? "Size unknown").font(.callout.monospacedDigit())
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(verbatim: row.tree.branch ?? URL(fileURLWithPath: row.tree.path).lastPathComponent)
+                        .font(.headline).lineLimit(1).truncationMode(.middle)
+                    Text(verbatim: URL(fileURLWithPath: row.projectID).lastPathComponent + " · " + (row.detail ?? row.category.title))
+                        .font(.callout).foregroundStyle(.secondary)
+                }.frame(maxWidth: .infinity, alignment: .leading).help(row.tree.path)
+                Text(row.bytes.map(diskSize) ?? "Size unknown").font(.callout.monospacedDigit())
                 if row.category == .cleanable {
                     Button("Clean…") { prepareCleanup(row) }
                         .disabled(library.activity != nil || request != nil || cleaning != nil)
                 }
             }
-            Text(verbatim: URL(fileURLWithPath: row.projectID).lastPathComponent + " · " + row.tree.path)
-                .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-            Text(verbatim: row.category.assessmentVerdict + " · " + (row.detail ?? row.category.title)).font(.callout.weight(.medium))
-            Text(verbatim: row.category.guidance).font(.callout)
-            if let advice = library.advice(for: row.id) {
-                Text(verbatim: "Model suggestion · " + advice).font(.callout).foregroundStyle(.secondary)
-            }
-            if row.nestedCount > 0 || row.parentPath != nil {
-                Text("Nested checkout sizes can overlap. Review child folders first.").font(.caption).foregroundStyle(.secondary)
+            Text(verbatim: library.advice(for: row.id) ?? row.category.guidance).font(.callout).textSelection(.enabled)
+            if let removal = pendingRemoval, removal.repo == row.projectID, removal.tree.id == row.tree.id {
+                RemovalConfirmation(removal: removal, busy: library.activity != nil,
+                                    cancel: { pendingRemoval = nil }, confirm: {
+                    pendingRemoval = nil
+                    cleaning = removal
+                    cleanupStartedAt = library.overview?.measuredAt
+                    priorFailure = library.failure?.id
+                    cleanupMessage = nil
+                    pendingLocalModel = nil
+                    library.remove(removal)
+                })
             }
         }
     }
@@ -320,7 +311,7 @@ struct AllWorkspacesAnalysisView: View {
         let project = library.workspaces.lazy.flatMap(\.projects).first { $0.id == row.projectID }
         guard let project, project.trees.contains(row.tree), let current = project.inspections[row.tree.id],
               current.reason == nil else {
-            cleanupMessage = "The local inspection changed. Refresh all workspaces before removing this checkout."
+            cleanupMessage = "The local inspection changed. Analyze again before removing this checkout."
             return
         }
         pendingRemoval = Removal(repo: row.projectID, tree: row.tree, generatedFolders: current.generatedFolders)
@@ -356,8 +347,7 @@ struct AllWorkspacesAnalysisView: View {
 
     @MainActor private func send() {
         guard request == nil, let assessment, let timestamp = library.overview?.measuredAt else { return }
-        let provider = options.provider
-        let model = options.model(for: provider)
+        let model = options.model(for: .ollama)
         let id = UUID()
         requestID = id
         reply = nil
@@ -365,15 +355,7 @@ struct AllWorkspacesAnalysisView: View {
         request = Task {
             defer { if requestID == id { request = nil } }
             do {
-                var key = ""
-                if provider.requiresKey {
-                    guard let saved = try ProviderKeys.read(provider), !saved.isEmpty else {
-                        problem = "Add a key for " + provider.title + " in AI Settings."
-                        return
-                    }
-                    key = saved
-                }
-                let answer = try await AIClient.analyze(provider: provider, model: model, key: key, evidence: assessment.payload)
+                let answer = try await AIClient.analyze(provider: .ollama, model: model, key: "", evidence: assessment.payload)
                 try Task.checkCancellation()
                 guard requestID == id, library.overview?.measuredAt == timestamp else { return }
                 do {
@@ -387,5 +369,29 @@ struct AllWorkspacesAnalysisView: View {
                 if !Task.isCancelled && requestID == id { problem = error.localizedDescription }
             }
         }
+    }
+}
+
+struct RemovalConfirmation: View {
+    let removal: Removal
+    let busy: Bool
+    let cancel: () -> Void
+    let confirm: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text("Permanently remove this checkout?").font(.headline)
+            Text(verbatim: removal.tree.path).font(.callout.monospaced()).textSelection(.enabled)
+            Text("Keep branch " + (removal.tree.branch ?? "") + ". Close sessions using this folder first.").font(.callout)
+            if !removal.generatedFolders.isEmpty {
+                Text("Also removes").font(.callout.bold())
+                ForEach(removal.generatedFolders, id: \.self) { Text(verbatim: $0).font(.caption.monospaced()) }
+            }
+            HStack {
+                Button("Cancel", action: cancel)
+                Button("Remove Worktree", role: .destructive, action: confirm).disabled(busy)
+            }
+        }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
+            .background(Studio.accent.opacity(0.07), in: RoundedRectangle(cornerRadius: 8))
     }
 }

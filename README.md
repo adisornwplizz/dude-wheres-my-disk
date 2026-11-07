@@ -1,5 +1,7 @@
 # Dude, Where’s My Disk?
 
+![Demo workspace showing four Git worktrees using 4.8 GB, with 1.2 GB ready to clean and the macOS menu bar popover open](docs/images/dude-wheres-my-disk-demo.png)
+
 <img src="Resources/AppIcon.png" width="96" alt="An orange floppy disk with a question mark">
 
 You closed the ticket. The worktree still lives here rent-free. Find it on your Mac.

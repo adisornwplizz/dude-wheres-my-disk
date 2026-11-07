@@ -181,7 +181,7 @@ private struct Output {
 }
 
 enum Inventory {
-    private static func run(_ executable: String, _ arguments: [String]) throws -> Output {
+    private static func run(_ executable: String, _ arguments: [String], readTimeout: TimeInterval? = 120) throws -> Output {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
@@ -197,16 +197,50 @@ enum Inventory {
         process.standardOutput = pipe
         process.standardError = pipe
         try process.run()
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let reader = pipe.fileHandleForReading
+        defer { try? reader.close() }
+        let data: Data
+        if let readTimeout {
+            do {
+                data = try readInspection(reader, timeout: readTimeout)
+            } catch {
+                if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+                throw error
+            }
+        } else {
+            data = reader.readDataToEndOfFile()
+        }
         process.waitUntilExit()
         return Output(status: process.terminationStatus, data: data)
     }
 
-    private static func git(_ directory: String, _ arguments: [String]) throws -> Output {
+    private static func readInspection(_ reader: FileHandle, timeout: TimeInterval) throws -> Data {
+        let clock = ProcessInfo.processInfo
+        let deadline = clock.systemUptime + timeout
+        var descriptor = pollfd(fd: reader.fileDescriptor, events: Int16(POLLIN), revents: 0)
+        var buffer = [UInt8](repeating: 0, count: 16384)
+        var output = Data()
+        while true {
+            try Task.checkCancellation()
+            guard clock.systemUptime < deadline else {
+                throw InventoryError("Timed out reading this checkout. Check folder access and analyze again.")
+            }
+            let ready = poll(&descriptor, 1, 100)
+            if ready == 0 || (ready < 0 && errno == EINTR) { continue }
+            guard ready > 0 else { throw InventoryError("Could not read the local inspection result.") }
+            let count = read(reader.fileDescriptor, &buffer, buffer.count)
+            if count == 0 { return output }
+            if count < 0 && errno == EINTR { continue }
+            guard count > 0 else { throw InventoryError("Could not read the local inspection result.") }
+            output.append(buffer, count: count)
+        }
+    }
+
+    private static func git(_ directory: String, _ arguments: [String], readTimeout: TimeInterval? = 120) throws -> Output {
         try run("/usr/bin/git", [
             "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
             "-c", "core.untrackedCache=false", "-C", directory
-        ] + arguments)
+        ] + arguments, readTimeout: readTimeout)
     }
 
     private static func canonical(_ path: String) throws -> String {
@@ -268,8 +302,8 @@ enum Inventory {
               try canonical(checkout.path) != canonical(repo) else {
             throw InventoryError("The selected path is no longer a linked checkout.")
         }
-        let registeredAdmin = try git(repo, ["rev-parse", "--absolute-git-dir"]).line()
-        let checkoutAdmin = try git(checkout.path, ["rev-parse", "--absolute-git-dir"]).line()
+        let registeredAdmin = try git(repo, ["rev-parse", "--absolute-git-dir"], readTimeout: 8).line()
+        let checkoutAdmin = try git(checkout.path, ["rev-parse", "--absolute-git-dir"], readTimeout: 8).line()
         let parent = URL(fileURLWithPath: try canonical(checkoutAdmin)).deletingLastPathComponent().path
         let root = try git(checkout.path, ["rev-parse", "--show-toplevel"]).line()
         let common = try git(checkout.path, ["rev-parse", "--path-format=absolute", "--git-common-dir"]).line()
@@ -304,7 +338,7 @@ enum Inventory {
         guard let branch = checkout.branch else { return .failure(CleanupBlocker(.detached, "Detached HEAD")) }
         guard let base = try mainline(repo) else { return .failure(CleanupBlocker(.uncertain, "Cannot identify the local default branch")) }
         guard base != "refs/heads/" + branch else { return .failure(CleanupBlocker(.primaryBranch, "Contains the default branch")) }
-        let admin = try git(checkout.path, ["rev-parse", "--absolute-git-dir"]).line()
+        let admin = try git(checkout.path, ["rev-parse", "--absolute-git-dir"], readTimeout: 8).line()
         let operations: Set<String> = ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "BISECT_START",
                                        "rebase-apply", "rebase-merge", "sequencer", "index.lock", "HEAD.lock"]
         let entries = try FileManager.default.contentsOfDirectory(atPath: admin)
@@ -463,6 +497,6 @@ enum Inventory {
         if let reason = WorktreeActivity.snapshot().blockingReason(for: checkout.path) {
             throw InventoryError(reason)
         }
-        _ = try git(repo, ["worktree", "remove", "--", checkout.path]).checked()
+        _ = try git(repo, ["worktree", "remove", "--", checkout.path], readTimeout: nil).checked()
     }
 }

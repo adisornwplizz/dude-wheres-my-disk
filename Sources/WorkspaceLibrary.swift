@@ -1,3 +1,4 @@
+import Darwin
 import AppKit
 import SwiftUI
 
@@ -102,17 +103,15 @@ struct Removal: Identifiable {
 
 // A recreated checkout can reuse the same path, branch, and commit.
 fileprivate struct FileIdentity: Equatable {
-    let device: UInt64
-    let inode: UInt64
+    let device: dev_t
+    let inode: ino_t
 
     init?(for tree: Checkout) {
         let marker = URL(fileURLWithPath: tree.path).appendingPathComponent(".git")
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: marker.path),
-              attributes[.type] as? FileAttributeType == .typeRegular,
-              let device = attributes[.systemNumber] as? NSNumber,
-              let inode = attributes[.systemFileNumber] as? NSNumber else { return nil }
-        self.device = device.uint64Value
-        self.inode = inode.uint64Value
+        var info = stat()
+        guard lstat(marker.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else { return nil }
+        device = info.st_dev
+        inode = info.st_ino
     }
 }
 

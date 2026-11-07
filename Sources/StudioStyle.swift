@@ -157,6 +157,7 @@ struct CleanStatus: View {
 
 struct WorktreeChangeCard: View {
     let description: TaskDescription
+    let nextStep: String?
     let clean: (() -> Void)?
     let busy: Bool
 
@@ -166,6 +167,10 @@ struct WorktreeChangeCard: View {
                 Text("Task description").font(.callout.weight(.semibold))
                 Text(verbatim: description.text).font(.callout).textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
+                if let nextStep {
+                    Text("Model suggestion").font(.caption.weight(.semibold)).padding(.top, 3)
+                    Text(verbatim: nextStep).font(.callout).textSelection(.enabled)
+                }
                 Text(verbatim: description.source).font(.caption).foregroundStyle(.secondary)
             }
             Spacer(minLength: 4)

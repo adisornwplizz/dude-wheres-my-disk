@@ -68,8 +68,8 @@ private struct BatchEvidenceVerify {
         let advice = try BatchSuggestions.read(String(decoding: raw, as: UTF8.self), matching: review)
         try expect(advice.summary == "3 stages checked" && advice.advice[first.row.id] == "Check the selected checkout path",
                    "Specific recommendation was lost")
-        try expect(advice.advice[second.row.id] == "Review generated items" && advice.advice[omitted.row.id] != "Ungrounded override",
-                   "Category fallback or omitted-item boundary failed")
+        try expect(advice.advice[second.row.id] == nil && advice.advice[omitted.row.id] != "Ungrounded override",
+                   "Repeated group guidance or accepted advice for an omitted row")
         var acceptedBadReply = false
         do { _ = try BatchSuggestions.read("Delete everything", matching: review); acceptedBadReply = true } catch {}
         try expect(!acceptedBadReply, "Unstructured model response became actionable advice")

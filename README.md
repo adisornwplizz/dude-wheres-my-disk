@@ -52,6 +52,8 @@ The separate cleanup explanation uses aggregate counts and up to 48 anonymized w
 
 The app checks the local default branch. Commit ancestry establishes a regular merge. A squash merge can produce a new commit ID, so the app also checks up to 512 first-parent commits on that branch after the fork. An exact match of the entire tracked Git tree establishes that the worktree’s final snapshot appeared in that history. Other commit arrangements can still require manual review.
 
+Local Git checks disable replacement objects and grafts when reading history. Comparisons that require an external Git filter may need manual review. Checkouts containing submodules also require manual review.
+
 Before removal, the app rechecks the registration, Git state, generated-item list and visible process activity. It protects a parent checkout when it finds a nested repository marker. Git-ignored directories named `node_modules`, `.build` or `DerivedData`, plus root-relative `dist/`, `.yarn/cache/` and `.yarn/install-state.gz`, may be included after explicit confirmation. Approval covers everything inside each listed directory. A file such as a root-level ignored `.env` blocks removal.
 
 ## Optional AI explanations

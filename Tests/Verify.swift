@@ -31,6 +31,9 @@ private struct Verify {
     }
 
     static func run() throws {
+        try require(confirmationName("ok\n\u{202E}txt") == #"ok\u{A}\u{202E}txt"# &&
+                    confirmationName(#"ok\u{A}"#) != confirmationName("ok\n"),
+                    "Confirmation hid or misrepresented filename characters")
         let repo = CommandLine.arguments[1]
         let checkouts = try Inventory.list(repo: repo)
         let expected = Set(["clean branch", "dirty", "ignored", "locked", "unmerged", "stale", "detached", "generated", "concealed", "merging", "nested", "squashed", "partial"])
@@ -96,6 +99,17 @@ private struct Verify {
         let unknown = Inspection(bytes: nil, blocker: nil, generatedFolders: []).measured(bytes: nil)
         try require(unknown.category == .uncertain, "Offered Clean with incomplete measurement")
 
+        // The configured filter is harmless. The app must refuse a comparison that needs it.
+        let attributes = URL(fileURLWithPath: dirty.path).appendingPathComponent(".gitattributes")
+        try Data("readme filter=fixture\n".utf8).write(to: attributes)
+        try git(["config", "filter.fixture.clean", "/usr/bin/cat"])
+        try Data("change requiring normalization".utf8).write(to: tracked)
+        var filterRefused = false
+        do { _ = try evidence(dirty) } catch { filterRefused = true }
+        try require(filterRefused, "Analysis used a configured external filter")
+        try FileManager.default.removeItem(at: attributes)
+        try git(["config", "--remove-section", "filter.fixture"])
+
         let categories: [String: CleanupCategory] = ["dirty": .modified, "ignored": .ignored, "locked": .locked,
                                                    "unmerged": .unmerged, "detached": .detached,
                                                    "concealed": .uncertain, "merging": .operation]
@@ -105,6 +119,12 @@ private struct Verify {
             try require(inspection.category == category, "Misclassified \(name) eligible")
             try requireRefusal(repo: repo, checkout: item)
         }
+
+        try git(["replace", "--graft", "main", "partial-integration"])
+        try git(["merge-base", "--is-ancestor", "partial-integration", "main"])
+        let rewritten = try Inventory.inspect(repo: repo, checkout: checkout("partial"))
+        try require(rewritten.category == .unmerged, "Replacement history unlocked an unmerged checkout")
+        try git(["replace", "-d", "main"])
 
         let squashed = try checkout("squashed")
         let evidence = try Inventory.analysis(repo: repo, checkout: squashed)

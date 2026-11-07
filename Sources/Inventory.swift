@@ -11,6 +11,21 @@ struct Checkout: Identifiable, Hashable, Sendable {
     let missing: Bool
 }
 
+// Keep a single filename from introducing a new line or reversing the confirmation text.
+func confirmationName(_ raw: String) -> String {
+    var result = ""
+    for scalar in raw.unicodeScalars {
+        switch scalar.properties.generalCategory {
+        case .control, .format, .lineSeparator, .paragraphSeparator:
+            result += "\\u{" + String(scalar.value, radix: 16, uppercase: true) + "}"
+        default:
+            if scalar == "\\" { result += "\\" }
+            result.unicodeScalars.append(scalar)
+        }
+    }
+    return result
+}
+
 enum CleanupCategory: String, CaseIterable, Hashable, Sendable {
     case cleanable, inUse, unmerged, detached, modified, untracked, ignored, nested
     case locked, primaryBranch, operation, missing, uncertain
@@ -238,8 +253,11 @@ enum Inventory {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
-        var environment = ProcessInfo.processInfo.environment.filter { !$0.key.hasPrefix("GIT_") }
+        var environment = ProcessInfo.processInfo.environment.filter { ["HOME", "TMPDIR", "USER", "LOGNAME"].contains($0.key) }
+        environment["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin"
         environment["LC_ALL"] = "C"
+        environment["GIT_NO_REPLACE_OBJECTS"] = "1"
+        environment["GIT_GRAFT_FILE"] = "/dev/null"
         environment["GIT_OPTIONAL_LOCKS"] = "0"
         environment["GIT_NO_LAZY_FETCH"] = "1"
         environment["GIT_TERMINAL_PROMPT"] = "0"
@@ -261,7 +279,12 @@ enum Inventory {
                 throw error
             }
         } else {
-            data = reader.readDataToEndOfFile()
+            // Drain removal diagnostics without interrupting an in-progress deletion.
+            var diagnostics = Data()
+            while let chunk = try reader.read(upToCount: 65_536), !chunk.isEmpty {
+                diagnostics.append(chunk.prefix(2048 - diagnostics.count))
+            }
+            data = diagnostics
         }
         process.waitUntilExit()
         return Output(status: process.terminationStatus, data: data)
@@ -285,16 +308,43 @@ enum Inventory {
             if count == 0 { return output }
             if count < 0 && errno == EINTR { continue }
             guard count > 0 else { throw InventoryError("Could not read the local inspection result.") }
+            if captureLimit == nil, output.count + count > 16 * 1024 * 1024 {
+                throw InventoryError("Git output is too large to inspect safely. Review this checkout manually.")
+            }
             let kept = captureLimit.map { min(count, $0 - output.count) } ?? count
             output.append(buffer, count: kept)
         }
     }
 
     private static func git(_ directory: String, _ arguments: [String], readTimeout: TimeInterval? = 120, captureLimit: Int? = nil) throws -> Output {
-        try run("/usr/bin/git", [
-            "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
-            "-c", "core.untrackedCache=false", "-C", directory
-        ] + arguments, readTimeout: readTimeout, captureLimit: captureLimit)
+        var options = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
+                       "-c", "core.untrackedCache=false", "-c", "submodule.recurse=false",
+                       "-c", "advice.graftFileDeprecated=false"]
+        let removing = arguments.starts(with: ["worktree", "remove", "--"])
+        if removing || arguments.first == "diff" || arguments.first == "status" || arguments.contains("--modified") {
+            // Removal can spawn git status in the linked checkout, whose config may differ from its parent.
+            let directories = removing ? [directory, arguments.last!] : [directory]
+            var drivers = Set<String>()
+            for root in directories {
+                let keys = try run("/usr/bin/git", ["-C", root, "config", "--includes", "--null", "--name-only",
+                    "--get-regexp", #"^filter\..*\.(clean|smudge|process)$"#], readTimeout: 8, captureLimit: 65_536)
+                if keys.status == 1 && keys.data.isEmpty { continue }
+                let data = try keys.checked()
+                guard data.count < 65_536, data.last == 0 else { throw InventoryError("Cannot verify Git filters.") }
+                for field in data.split(separator: 0) {
+                    guard let key = String(data: field, encoding: .utf8), key.hasPrefix("filter."), !key.contains("="),
+                          let dot = key.lastIndex(of: "."), ["clean", "smudge", "process"].contains(String(key[key.index(after: dot)...]))
+                    else { throw InventoryError("Cannot verify a Git filter name.") }
+                    drivers.insert(String(key[..<dot]))
+                }
+            }
+            for driver in drivers {
+                options += ["-c", driver + ".process=", "-c", driver + ".clean=/usr/bin/false",
+                            "-c", driver + ".smudge=/usr/bin/false", "-c", driver + ".required=true"]
+            }
+        }
+        return try run("/usr/bin/git", options + ["-C", directory] + arguments,
+                       readTimeout: readTimeout, captureLimit: captureLimit)
     }
 
     private static func canonical(_ path: String) throws -> String {
@@ -538,6 +588,11 @@ enum Inventory {
             return Inspection(bytes: nil, blocker: CleanupBlocker(.uncertain, "Index contains files that need manual review"), generatedFolders: [])
         }
 
+        let entries = try git(checkout.path, ["ls-files", "--stage", "-z"]).checked()
+        if entries.split(separator: 0).contains(where: { $0.starts(with: "160000 ".utf8) }) {
+            return Inspection(bytes: nil, blocker: CleanupBlocker(.nested, "Contains a Git submodule"), generatedFolders: [])
+        }
+
         // Git can collapse an entire ignored directory, hiding another checkout inside it.
         let nested = try run("/usr/bin/find", [
             "-P", checkout.path, "-mindepth", "2", "-iname", ".git", "-print0", "-quit"
@@ -552,7 +607,7 @@ enum Inventory {
         }
         let status = try git(checkout.path, [
             "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored=matching",
-            "--ignore-submodules=none"
+            "--ignore-submodules=all"
         ]).checked()
         let generatedNames: Set<String> = ["node_modules", ".build", "DerivedData"]
         var folders: [String] = []

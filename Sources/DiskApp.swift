@@ -287,7 +287,7 @@ private struct DiskWindow: View {
         if let report {
             CleanupBrowser(review: report.cleanup, multipleRepos: shownProjects.count > 1, worktree: { row in
                 if let project = shownProjects.first(where: { $0.id == row.projectID }) {
-                    treeRow(row.tree, project: project, review: row)
+                    treeRow(row.tree, project: project, review: row, showProjectName: shownProjects.count > 1)
                 }
             }, repositories: {
                 repositoryList(workspace: workspace, child: child, standalone: standalone, report: report)
@@ -369,7 +369,7 @@ private struct DiskWindow: View {
         }
     }
 
-    private func treeRow(_ tree: Checkout, project: Project, review: CleanupRow? = nil) -> some View {
+    private func treeRow(_ tree: Checkout, project: Project, review: CleanupRow? = nil, showProjectName: Bool = false) -> some View {
         let result = project.inspections[tree.id]
         return VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .top, spacing: 12) {
@@ -377,7 +377,7 @@ private struct DiskWindow: View {
                     .foregroundStyle(Studio.accent).frame(width: 30, height: 30)
                     .background(Studio.accent.opacity(0.09), in: RoundedRectangle(cornerRadius: 7))
                 VStack(alignment: .leading, spacing: 5) {
-                    if review != nil {
+                    if showProjectName {
                         Text(project.name.uppercased()).font(.system(size: 9, weight: .bold)).tracking(1.0).foregroundStyle(Studio.accent)
                     }
                     Text(tree.branch ?? URL(fileURLWithPath: tree.path).lastPathComponent)
@@ -394,10 +394,6 @@ private struct DiskWindow: View {
                             Text("Inside " + URL(fileURLWithPath: parent).lastPathComponent)
                                 .font(.caption).foregroundStyle(.secondary).help(parent)
                         }
-                    }
-                    if let suggestion = library.advice(for: CleanupRow.ID(repo: project.id, path: tree.path)) {
-                        Text("Model suggestion").font(.caption.weight(.semibold)).foregroundStyle(Studio.accent)
-                        Text(verbatim: suggestion).font(.callout).textSelection(.enabled)
                     }
                 }
                 Spacer(minLength: 6)
@@ -421,6 +417,7 @@ private struct DiskWindow: View {
                 }
             }
             WorktreeChangeCard(description: library.taskDescription(repo: project.id, tree: tree),
+                               nextStep: library.advice(for: .init(repo: project.id, path: tree.path)),
                                clean: clean, busy: library.activity != nil)
             if let removal = library.pendingRemoval, removal.repo == project.id, removal.tree.id == tree.id {
                 RemovalConfirmation(removal: removal, busy: library.activity != nil,

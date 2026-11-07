@@ -109,7 +109,7 @@ struct BatchSuggestions: Decodable {
         var advice: [CleanupRow.ID: String] = [:]
         for (index, item) in assessment.items.enumerated() {
             let specific = index < assessment.shownToModel ? response.byWorktree[item.id] : nil
-            advice[item.row.id] = plain(specific, limit: 450) ?? plain(response.byReason[item.row.category.rawValue], limit: 450)
+            advice[item.row.id] = plain(specific, limit: 450)
         }
         return (summary, advice)
     }
@@ -249,7 +249,8 @@ struct AllWorkspacesAnalysisView: View {
                     Label("Incomplete scan or process visibility. Check uncertain worktrees before cleanup.", systemImage: "exclamationmark.triangle")
                         .font(.callout).foregroundStyle(.secondary)
                 }
-                HStack(spacing: 16) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 112), spacing: 12, alignment: .leading)],
+                          alignment: .leading, spacing: 10) {
                     VStack(alignment: .leading) {
                         StudioCaption("Worktree storage")
                         Text((snapshot.partial ? "≥ " : "") + diskSize(snapshot.linkedBytes)).font(.title2.bold().monospacedDigit())
@@ -260,8 +261,7 @@ struct AllWorkspacesAnalysisView: View {
                             Text(String(assessment.verdictCounts[verdict] ?? 0)).font(.title2.bold().monospacedDigit())
                         }
                     }
-                    Spacer()
-                    VStack(alignment: .trailing) {
+                    VStack(alignment: .leading) {
                         StudioCaption("Cleanable estimate")
                         Text(snapshot.activityAvailable ? diskSize(snapshot.cleanableBytes) : "Unknown").font(.title2.bold().monospacedDigit())
                     }
@@ -345,9 +345,9 @@ struct AllWorkspacesAnalysisView: View {
             }
             CleanStatus(category: row.category, reason: row.detail, merge: row.mergeEvidence)
             WorktreeChangeCard(description: library.taskDescription(repo: row.projectID, tree: row.tree),
+                               nextStep: library.advice(for: row.id),
                                clean: row.category == .cleanable ? { prepareCleanup(row) } : nil,
                                busy: library.activity != nil || cleaning != nil)
-            Text(verbatim: library.advice(for: row.id) ?? row.category.guidance).font(.callout).textSelection(.enabled)
             if let removal = pendingRemoval, removal.repo == row.projectID, removal.tree.id == row.tree.id {
                 RemovalConfirmation(removal: removal, busy: library.activity != nil,
                                     cancel: { pendingRemoval = nil }, confirm: {
@@ -404,11 +404,11 @@ struct RemovalConfirmation: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             Text("Permanently remove this checkout?").font(.headline)
-            Text(verbatim: removal.tree.path).font(.callout.monospaced()).textSelection(.enabled)
-            Text("Keep branch " + (removal.tree.branch ?? "") + ". Close sessions using this folder first.").font(.callout)
+            Text(verbatim: confirmationName(removal.tree.path)).font(.callout.monospaced()).textSelection(.enabled)
+            Text("Keep branch " + confirmationName(removal.tree.branch ?? "") + ". Close sessions using this folder first.").font(.callout)
             if !removal.generatedFolders.isEmpty {
                 Text("Also removes").font(.callout.bold())
-                ForEach(removal.generatedFolders, id: \.self) { Text(verbatim: $0).font(.caption.monospaced()) }
+                ForEach(removal.generatedFolders, id: \.self) { Text(verbatim: confirmationName($0)).font(.caption.monospaced()) }
             }
             HStack {
                 Button("Cancel", action: cancel)
